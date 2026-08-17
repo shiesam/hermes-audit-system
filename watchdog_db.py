@@ -278,9 +278,9 @@ def arm_watchdog_job(
     conn.execute("""
         INSERT INTO watchdog_jobs
             (watchdog_tag, msg_id, state, armed_at, no_progress_threshold, next_review_at, kind, label)
-        VALUES (?, ?, 'armed', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        watchdog_tag, msg_id,
+        watchdog_tag, msg_id, 'armed',
         armed_at,
         threshold,
         _compute_next_review(armed_at, threshold),
