@@ -88,7 +88,8 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
             payload        TEXT,          -- JSON
             result         TEXT,          -- JSON，完成時填入
             errors         TEXT,          -- JSON，失敗時填入
-            next_hop       TEXT           -- JSON，下一步提示
+            next_hop       TEXT,          -- JSON，下一步提示
+            version        INTEGER DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS watchdog_jobs (
@@ -171,11 +172,13 @@ def update_message_status(
     result: Optional[dict] = None,
     errors: Optional[dict] = None,
     next_hop: Optional[dict] = None,
+    expected_version: Optional[int] = None,
 ) -> bool:
     """
     原子更新訊息狀態。
 
     - 若 expected_current 指定，則僅當目前狀態吻合才更新（ 防止覆蓋 ）。
+    - 若 expected_version 指定，則僅當版本號吻合才更新，並同時遞增版本（ 樂觀鎖 ）。
     - 回傳 True 表示有成功更新一列， False 表示條件不吻合或 msg_id 不存在。
     """
     now = utc_now_iso()
@@ -185,10 +188,11 @@ def update_message_status(
             updated_at = ?,
             result = COALESCE(?, result),
             errors = COALESCE(?, errors),
-            next_hop = COALESCE(?, next_hop)
+            next_hop = COALESCE(?, next_hop),
+            version = version + 1
         WHERE msg_id = ?
     """
-    params: list[Any] = [new_status, now, 
+    params: list[Any] = [new_status, now,
                          json.dumps(result) if result else None,
                          json.dumps(errors) if errors else None,
                          json.dumps(next_hop) if next_hop else None,
@@ -196,6 +200,9 @@ def update_message_status(
     if expected_current:
         sql += " AND status = ?"
         params.append(expected_current)
+    if expected_version is not None:
+        sql += " AND version = ?"
+        params.append(expected_version)
 
     cursor = conn.execute(sql, params)
     conn.commit()
@@ -530,8 +537,6 @@ def _has_open_incident_for_msg(
         WHERE msg_id = ? AND watchdog_tag = ? AND status = 'open'
         LIMIT 1
     """, (msg_id, watchdog_tag)).fetchone()
-    return row is not None
-
     return row is not None
 
 
