@@ -1,0 +1,108 @@
+# =============================================================================
+# Hermes Audit System - 主機執行清單
+# 目標主機：192.168.0.68 (Linux / Ubuntu / Debian)
+# 用途：設置 Samba 共享，供 Windows 筆電掛載
+# 執行方式：逐行複製貼上，或整段貼入終端機執行
+# =============================================================================
+
+# ===== 步驟 1: 更新系統套件清單 =====
+sudo apt-get update -y
+
+# ===== 步驟 2: 安裝 Samba =====
+sudo apt-get install -y samba
+
+# ===== 步驟 3: 確認 Samba 已安裝 =====
+smbd --version
+
+# ===== 步驟 4: 建立共享目錄 =====
+sudo mkdir -p /srv/samba/hermes-audit
+
+# ===== 步驟 5: 建立 Linux 系統用戶 hermes（不允許登入） =====
+# 如果用戶已存在，這行會顯示錯誤，可忽略
+sudo useradd -M -s /usr/sbin/nologin hermes
+
+# ===== 步驟 6: 設定共享目錄的擁有者與權限 =====
+sudo chown -R hermes:hermes /srv/samba/hermes-audit
+sudo chmod -R 0775 /srv/samba/hermes-audit
+
+# ===== 步驟 7: 建立 Samba 用戶並設定密碼 =====
+# 注意：下面這行會提示輸入密碼兩次，請輸入：hermes-audit-2026
+sudo smbpasswd -a hermes
+# 輸入密碼：hermes-audit-2026
+# 再次輸入：hermes-audit-2026
+
+# ===== 步驟 8: 啟用 Samba 用戶 =====
+sudo smbpasswd -e hermes
+
+# ===== 步驟 9: 備份原始 smb.conf =====
+sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.bak.$(date +%Y%m%d%H%M%S)
+
+# ===== 步驟 10: 寫入新的 smb.conf 設定 =====
+# 注意：以下使用 tee 寫入，會完全覆蓋原設定
+sudo tee /etc/samba/smb.conf > /dev/null << 'EOF'
+[global]
+   workgroup = HERMES
+   server string = Hermes Audit System Samba Server
+   security = user
+   map to guest = bad user
+   dns proxy = no
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+   unix charset = utf-8
+   dos charset = cp950
+
+[hermes-audit]
+   comment = Hermes Audit Shared Folder
+   path = /srv/samba/hermes-audit
+   browseable = yes
+   read only = no
+   writable = yes
+   valid users = hermes
+   create mask = 0664
+   directory mask = 0775
+   force user = hermes
+   force group = hermes
+EOF
+
+# ===== 步驟 11: 測試 smb.conf 設定是否正確 =====
+sudo testparm -s
+
+# ===== 步驟 12: 重啟 Samba 服務 =====
+sudo systemctl restart smbd
+sudo systemctl restart nmbd
+
+# ===== 步驟 13: 設定 Samba 服務開機自動啟動 =====
+sudo systemctl enable smbd
+sudo systemctl enable nmbd
+
+# ===== 步驟 14: 確認服務正在執行 =====
+sudo systemctl status smbd --no-pager
+sudo systemctl status nmbd --no-pager
+
+# ===== 步驟 15: 確認主機 IP 與 Samba 監聽埠 =====
+ip addr show
+sudo ss -tlnp | grep smbd
+
+# ===== 步驟 16: 驗證 Samba 共享清單（本機測試） =====
+smbclient -L //192.168.0.68 -U hermes
+# 提示輸入密碼時，輸入：hermes-audit-2026
+
+# ===== 步驟 17: 驗證可以連入共享目錄 =====
+smbclient //192.168.0.68/hermes-audit -U hermes
+# 提示輸入密碼時，輸入：hermes-audit-2026
+# 進入後輸入 ls 確認目錄內容，輸入 exit 離開
+
+# ===== 步驟 18: （可選）開放防火牆 Samba 埠 =====
+# 如果主機有啟用 ufw 防火牆，執行以下命令
+sudo ufw allow samba
+sudo ufw status
+
+# =============================================================================
+# 完成！設定摘要：
+#   用戶名：hermes
+#   密碼：hermes-audit-2026
+#   共享路徑：/srv/samba/hermes-audit
+#   共享名稱：hermes-audit
+#   主機 IP：192.168.0.68
+#   Windows 存取路徑：\\192.168.0.68\hermes-audit
+# =============================================================================
