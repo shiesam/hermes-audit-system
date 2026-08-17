@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import sys, os
-sys.path.insert(0, '/home/vboxuser/agent-mesh')
+sys.path.insert(0, '/home/vboxuser/hermes-audit-system')
 from watchdog_db import *
 
-DB = Path('/home/vboxuser/agent-mesh/agent-mesh.db')
+DB = Path('/tmp/agent-mesh.db')
 
 def section(title):
     print(f"\n{'='*60}")
