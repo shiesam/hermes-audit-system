@@ -85,6 +85,7 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
             receiver       TEXT NOT NULL,
             created_at     TEXT NOT NULL,
             updated_at     TEXT NOT NULL,
+            version        INTEGER NOT NULL DEFAULT 1,
             payload        TEXT,          -- JSON
             result         TEXT,          -- JSON，完成時填入
             errors         TEXT,          -- JSON，失敗時填入
@@ -151,8 +152,8 @@ def create_message(
     now = utc_now_iso()
     conn.execute("""
         INSERT OR IGNORE INTO messages
-            (msg_id, type, status, sender, receiver, created_at, updated_at, payload, result, errors, next_hop)
-        VALUES (?, 'task', 'submitted', ?, ?, ?, ?, ?, ?, ?, ?)
+            (msg_id, type, status, sender, receiver, created_at, updated_at, version, payload, result, errors, next_hop)
+        VALUES (?, 'task', 'submitted', ?, ?, ?, ?, 1, ?, ?, ?, ?)
     """, (
         msg_id, sender, receiver, now, now,
         json.dumps(payload), 
@@ -168,14 +169,16 @@ def update_message_status(
     msg_id: str,
     new_status: str,
     expected_current: Optional[str] = None,
+    expected_version: Optional[int] = None,
     result: Optional[dict] = None,
     errors: Optional[dict] = None,
     next_hop: Optional[dict] = None,
 ) -> bool:
     """
-    原子更新訊息狀態。
+    原子更新訊息狀態（支援樂觀鎖）。
 
     - 若 expected_current 指定，則僅當目前狀態吻合才更新（ 防止覆蓋 ）。
+    - 若 expected_version 指定，則僅當版本吻合才更新，並同時遞增版本號。
     - 回傳 True 表示有成功更新一列， False 表示條件不吻合或 msg_id 不存在。
     """
     now = utc_now_iso()
@@ -183,6 +186,7 @@ def update_message_status(
         UPDATE messages
         SET status = ?,
             updated_at = ?,
+            version = version + 1,
             result = COALESCE(?, result),
             errors = COALESCE(?, errors),
             next_hop = COALESCE(?, next_hop)
@@ -196,6 +200,10 @@ def update_message_status(
     if expected_current:
         sql += " AND status = ?"
         params.append(expected_current)
+    
+    if expected_version is not None:
+        sql += " AND version = ?"
+        params.append(expected_version)
 
     cursor = conn.execute(sql, params)
     conn.commit()
@@ -530,8 +538,6 @@ def _has_open_incident_for_msg(
         WHERE msg_id = ? AND watchdog_tag = ? AND status = 'open'
         LIMIT 1
     """, (msg_id, watchdog_tag)).fetchone()
-    return row is not None
-
     return row is not None
 
 
