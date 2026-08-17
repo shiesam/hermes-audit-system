@@ -1,0 +1,6 @@
+*.db
+__pycache__/
+*.log
+fix_*.py
+repair_*.py
+*.pyc
