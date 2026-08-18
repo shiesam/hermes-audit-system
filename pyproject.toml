@@ -1,0 +1,14 @@
+[project]
+name = "hermes-audit-system"
+version = "0.1.0"
+description = "Role-agnostic agent mesh with watchdog"
+requires-python = ">=3.11"
+
+dependencies = [
+    "dataclasses-json",
+    "pydantic>=2.0",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
