@@ -31,6 +31,14 @@ except ImportError:
     print("ERROR: watchdog_db.py not found. Make sure you're in the hermes-audit-system directory.")
     sys.exit(1)
 
+# 加入 src 讓進度追蹤可被 import
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+try:
+    from watchdog.mesh.progress_tracker import ProgressTracker
+except ImportError:
+    print("WARNING: ProgressTracker not found. Progress tracking disabled.")
+    ProgressTracker = None
+
 
 # ──────────────────────────────────────────────
 # 配置
@@ -184,6 +192,22 @@ def executor_listener_loop(
                     print(f"  │  來自: {sender}")
                     print(f"  │  狀態: {msg['status']}")
                     
+                    # 初始化進度追蹤（如果可用）
+                    tracker = None
+                    if ProgressTracker:
+                        try:
+                            tracker = ProgressTracker(
+                                task_id=msg_id,
+                                agent_name=self_name
+                            )
+                            tracker.record_started(
+                                message=f"Executor {self_name} received task from {sender}"
+                            )
+                            print(f"  │  📊 進度追蹤已啟動")
+                        except Exception as e:
+                            print(f"  │  ⚠️  進度追蹤初始化失敗: {e}")
+                            tracker = None
+                    
                     try:
                         # 2. 確認收到 → state: acknowledged
                         ok = update_message_status(
@@ -192,10 +216,17 @@ def executor_listener_loop(
                         )
                         if not ok:
                             print(f"  │  ❌ 已被其他 agent 搶走")
+                            if tracker:
+                                tracker.record_failed(
+                                    error="Message taken by another executor",
+                                    message="已被其他執行端搶走"
+                                )
                             print(f"  └─")
                             continue
                         
                         print(f"  │  ✅ 確認收到 (acknowledged)")
+                        if tracker:
+                            tracker.record_acknowledged(message="Task acknowledged")
                         
                         # 3. 尋找對應的 watchdog job
                         watchdog_jobs = get_active_watchdog_jobs(conn)
@@ -216,10 +247,17 @@ def executor_listener_loop(
                         )
                         if not ok:
                             print(f"  │  ❌ 狀態更新失敗")
+                            if tracker:
+                                tracker.record_failed(
+                                    error="Failed to update status to working",
+                                    message="狀態更新失敗"
+                                )
                             print(f"  └─")
                             continue
                         
                         print(f"  │  🔄 開始工作 (working)")
+                        if tracker:
+                            tracker.record_progress(percent=25, message="Started processing")
                         
                         # 6. 執行任務核心邏輯
                         result = do_work(payload)
@@ -228,6 +266,8 @@ def executor_listener_loop(
                             raise Exception("Work failed")
                         
                         print(f"  │  ✅ 工作完成")
+                        if tracker:
+                            tracker.record_progress(percent=75, message="Processing complete")
                         
                         # 7. 進度中：定期發送 heartbeat（可選）
                         if wd_tag:
@@ -242,10 +282,20 @@ def executor_listener_loop(
                         
                         if ok:
                             print(f"  │  ✅ 標示完成 (completed)")
+                            if tracker:
+                                tracker.record_completed(
+                                    result=result,
+                                    message="Task completed successfully"
+                                )
                             if wd_tag:
                                 print(f"  │  📍 watchdog 會自動 disarm")
                         else:
                             print(f"  │  ⚠️  標示完成失敗")
+                            if tracker:
+                                tracker.record_failed(
+                                    error="Failed to mark as completed",
+                                    message="標示完成失敗"
+                                )
                         
                         print(f"  └─")
                     
@@ -256,8 +306,21 @@ def executor_listener_loop(
                             conn, msg_id, 'failed',
                             errors={"error": str(e), "type": type(e).__name__}
                         )
+                        if tracker:
+                            tracker.record_failed(
+                                error=str(e),
+                                message=f"Exception: {type(e).__name__}"
+                            )
                         print(f"  │  ✅ 標示失敗")
                         print(f"  └─")
+                    
+                    finally:
+                        # 關閉進度追蹤
+                        if tracker:
+                            try:
+                                tracker.close()
+                            except Exception as e:
+                                print(f"  ⚠️  進度追蹤關閉失敗: {e}")
                 
                 time.sleep(poll_interval)
             
