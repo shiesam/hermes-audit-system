@@ -27,8 +27,10 @@ try:
         update_message_status, get_open_incidents, get_active_watchdog_jobs,
         utc_now_iso, DEFAULT_THRESHOLDS
     )
-except ImportError:
-    print("ERROR: watchdog_db.py not found. Make sure you're in the hermes-audit-system directory.")
+    from progress_tracker import ProgressTracker
+except ImportError as e:
+    print(f"ERROR: Import failed: {e}")
+    print("Make sure you're in the hermes-audit-system directory.")
     sys.exit(1)
 
 
@@ -66,7 +68,8 @@ def initiator_create_task(
     agent_name: str,
     payload: dict,
     kind: str = "collection",
-    threshold_override: Optional[int] = None
+    threshold_override: Optional[int] = None,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> Tuple[str, str]:
     """
     發起端建立任務並 arm watchdog
@@ -77,6 +80,7 @@ def initiator_create_task(
         payload: 任務內容
         kind: 任務類型 (collection/processing/verification)
         threshold_override: 覆寫超時時間（秒）
+        db_path: 資料庫路徑
     
     Returns:
         (msg_id, watchdog_tag)
@@ -89,7 +93,7 @@ def initiator_create_task(
     self_name = config["self"]
     other_name = config["other"]
     
-    # 1. 建立訊息
+    # 1. 建立訊息（=task_id）
     msg_id = f"m-{uuid.uuid4().hex[:8]}"
     create_message(
         conn,
@@ -103,7 +107,12 @@ def initiator_create_task(
     print(f"   發起端: {self_name}")
     print(f"   執行端: {other_name}")
     
-    # 2. Arm watchdog
+    # 2. 初始化進度追蹤
+    tracker = ProgressTracker(db_path, msg_id, self_name)
+    tracker.record_started(message=f"Task initiated by {self_name}")
+    print(f"✅ 記錄進度事件: started")
+    
+    # 3. Arm watchdog
     threshold = threshold_override or DEFAULT_THRESHOLDS.get(kind, 300)
     wd_tag = arm_watchdog_job(
         conn,
@@ -115,25 +124,30 @@ def initiator_create_task(
     print(f"✅ Arm Watchdog: {wd_tag}")
     print(f"   超時時間: {threshold}s")
     
+    tracker.close()
     return msg_id, wd_tag
 
 
 def initiator_wait_for_result(
     conn: sqlite3.Connection,
     msg_id: str,
+    agent_name: str,
     timeout_seconds: int = 600,
     poll_interval: int = 5,
-    verbose: bool = True
+    verbose: bool = True,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> Optional[dict]:
     """
     發起端等待任務結果
-    
+
     Args:
         conn: 資料庫連接
         msg_id: 訊息 ID
+        agent_name: Agent 名稱（用於進度追蹤）
         timeout_seconds: 總超時時間（秒）
         poll_interval: 輪詢間隔（秒）
         verbose: 是否詳細輸出
+        db_path: 資料庫路徑
     
     Returns:
         result dict 或 None
@@ -141,6 +155,9 @@ def initiator_wait_for_result(
     
     start_time = time.time()
     iteration = 0
+    
+    # 初始化進度追蹤
+    tracker = ProgressTracker(db_path, msg_id, agent_name)
     
     print(f"\n⏳ 等待任務完成...")
     print(f"   訊息: {msg_id}")
@@ -153,6 +170,11 @@ def initiator_wait_for_result(
         
         if elapsed > timeout_seconds:
             print(f"\n❌ 總超時 ({timeout_seconds}s)")
+            tracker.record_failed(
+                error=f"Timeout after {timeout_seconds}s",
+                message=f"Task timed out waiting for result"
+            )
+            tracker.close()
             return None
         
         msg = get_message(conn, msg_id)
@@ -161,25 +183,56 @@ def initiator_wait_for_result(
             result = json.loads(msg['result']) if msg['result'] else None
             print(f"\n✅ 任務完成!")
             print(f"   結果: {json.dumps(result, indent=2, ensure_ascii=False)}")
+            
+            # 記錄完成事件
+            tracker.record_completed(
+                result=result,
+                message=f"Task completed after {elapsed:.1f}s"
+            )
+            tracker.close()
             return result
         
         elif msg['status'] == 'failed':
             errors = json.loads(msg['errors']) if msg['errors'] else {}
             print(f"\n❌ 任務失敗")
             print(f"   錯誤: {json.dumps(errors, indent=2, ensure_ascii=False)}")
+            
+            # 記錄失敗事件
+            error_msg = json.dumps(errors, ensure_ascii=False)
+            tracker.record_failed(
+                error=error_msg,
+                message=f"Task failed"
+            )
+            tracker.close()
             return None
         
         elif msg['status'] == 'input-required':
             next_hop = json.loads(msg['next_hop']) if msg['next_hop'] else {}
             print(f"\n⏸️  需要輸入")
             print(f"   提示: {next_hop}")
+            
+            tracker.record_progress(
+                percent=50,
+                message=f"Waiting for input",
+                metadata={"next_hop": next_hop}
+            )
+            tracker.close()
             return None
         
         elif msg['status'] == 'cancelled':
             print(f"\n🚫 任務已取消")
+            
+            tracker.record_failed(
+                error="Task cancelled",
+                message="Task was cancelled by user or system"
+            )
+            tracker.close()
             return None
         
         else:
+            # 記錄心跳和進度
+            tracker.record_heartbeat(message=f"Still waiting... elapsed={elapsed:.1f}s")
+            
             # 檢查 incident
             open_incs = get_open_incidents(conn, limit=50)
             my_incidents = [i for i in open_incs if i['msg_id'] == msg_id]
@@ -256,7 +309,8 @@ def initiator_interactive_mode(
                     agent_name,
                     payload,
                     kind=task_type,
-                    threshold_override=threshold_override
+                    threshold_override=threshold_override,
+                    db_path=db_path,
                 )
                 
                 # 等待結果
@@ -266,9 +320,11 @@ def initiator_interactive_mode(
                 result = initiator_wait_for_result(
                     conn,
                     msg_id,
+                    agent_name=agent_name,
                     timeout_seconds=timeout,
                     poll_interval=5,
-                    verbose=True
+                    verbose=True,
+                    db_path=db_path,
                 )
                 
                 if result:
@@ -325,7 +381,8 @@ def initiator_batch_mode(
             agent_name,
             payload,
             kind=task_type,
-            threshold_override=threshold_override
+            threshold_override=threshold_override,
+            db_path=db_path,
         )
         
         print(f"\n訊息已建立: {msg_id}")
@@ -338,9 +395,11 @@ def initiator_batch_mode(
             result = initiator_wait_for_result(
                 conn,
                 msg_id,
+                agent_name=agent_name,
                 timeout_seconds=timeout,
                 poll_interval=5,
-                verbose=True
+                verbose=True,
+                db_path=db_path,
             )
     
     finally:
