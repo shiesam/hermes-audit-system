@@ -186,6 +186,9 @@ def executor_listener_loop(
                     print(f"  │  來自: {sender}")
                     print(f"  │  狀態: {msg['status']}")
                     
+                    # 初始化進度追蹤（提前到 try 塊最前面，確保即使失敗也能記錄）
+                    tracker = ProgressTracker(db_path, msg_id, self_name)
+                    
                     try:
                         # 2. 確認收到 → state: acknowledged
                         ok = update_message_status(
@@ -195,6 +198,7 @@ def executor_listener_loop(
                         if not ok:
                             print(f"  │  ❌ 已被其他 agent 搶走")
                             print(f"  └─")
+                            tracker.close()
                             continue
                         
                         print(f"  │  ✅ 確認收到 (acknowledged)")
@@ -211,8 +215,6 @@ def executor_listener_loop(
                             heartbeat(conn, wd_tag)
                             print(f"  │  💓 發送 heartbeat (wd={wd_tag})")
 
-                        # 初始化進度追蹤
-                        tracker = ProgressTracker(db_path, msg_id, self_name)
                         tracker.record_acknowledged(message=f"已確認來自 {sender} 的任務")
 
                         # 5. 開始工作
@@ -236,6 +238,7 @@ def executor_listener_loop(
                             raise Exception("Work failed")
                         
                         print(f"  │  ✅ 工作完成")
+                        tracker.record_progress(percent=75, message="任務執行完成，準備返回結果")
                         
                         # 7. 進度中：定期發送 heartbeat（可選）
                         if wd_tag:
