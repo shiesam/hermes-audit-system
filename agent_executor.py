@@ -27,8 +27,10 @@ try:
         update_message_status, heartbeat, get_active_watchdog_jobs,
         utc_now_iso
     )
-except ImportError:
-    print("ERROR: watchdog_db.py not found. Make sure you're in the hermes-audit-system directory.")
+    from progress_tracker import ProgressTracker
+except ImportError as e:
+    print(f"ERROR: Import failed: {e}")
+    print("Make sure you're in the hermes-audit-system directory.")
     sys.exit(1)
 
 
@@ -184,6 +186,9 @@ def executor_listener_loop(
                     print(f"  │  來自: {sender}")
                     print(f"  │  狀態: {msg['status']}")
                     
+                    # 初始化進度追蹤
+                    tracker = ProgressTracker(db_path, msg_id, self_name)
+                    
                     try:
                         # 2. 確認收到 → state: acknowledged
                         ok = update_message_status(
@@ -193,9 +198,15 @@ def executor_listener_loop(
                         if not ok:
                             print(f"  │  ❌ 已被其他 agent 搶走")
                             print(f"  └─")
+                            tracker.close()
                             continue
                         
                         print(f"  │  ✅ 確認收到 (acknowledged)")
+                        
+                        # 記錄 acknowledged 事件
+                        tracker.record_acknowledged(
+                            message=f"Task received and acknowledged by {self_name}"
+                        )
                         
                         # 3. 尋找對應的 watchdog job
                         watchdog_jobs = get_active_watchdog_jobs(conn)
@@ -217,9 +228,16 @@ def executor_listener_loop(
                         if not ok:
                             print(f"  │  ❌ 狀態更新失敗")
                             print(f"  └─")
+                            tracker.close()
                             continue
                         
                         print(f"  │  🔄 開始工作 (working)")
+                        
+                        # 記錄進度：開始工作
+                        tracker.record_progress(
+                            percent=10,
+                            message=f"Starting task execution on {self_name}"
+                        )
                         
                         # 6. 執行任務核心邏輯
                         result = do_work(payload)
@@ -228,6 +246,12 @@ def executor_listener_loop(
                             raise Exception("Work failed")
                         
                         print(f"  │  ✅ 工作完成")
+                        
+                        # 記錄進度：工作完成
+                        tracker.record_progress(
+                            percent=90,
+                            message="Task execution completed, preparing result"
+                        )
                         
                         # 7. 進度中：定期發送 heartbeat（可選）
                         if wd_tag:
@@ -242,6 +266,13 @@ def executor_listener_loop(
                         
                         if ok:
                             print(f"  │  ✅ 標示完成 (completed)")
+                            
+                            # 記錄完成事件
+                            tracker.record_completed(
+                                result=result,
+                                message=f"Task completed successfully by {self_name}"
+                            )
+                            
                             if wd_tag:
                                 print(f"  │  📍 watchdog 會自動 disarm")
                         else:
@@ -256,8 +287,18 @@ def executor_listener_loop(
                             conn, msg_id, 'failed',
                             errors={"error": str(e), "type": type(e).__name__}
                         )
+                        
+                        # 記錄失敗事件
+                        tracker.record_failed(
+                            error=str(e),
+                            message=f"Task failed during execution on {self_name}"
+                        )
+                        
                         print(f"  │  ✅ 標示失敗")
                         print(f"  └─")
+                    
+                    finally:
+                        tracker.close()
                 
                 time.sleep(poll_interval)
             
