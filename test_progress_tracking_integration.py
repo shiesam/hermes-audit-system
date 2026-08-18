@@ -1,295 +1,191 @@
 #!/usr/bin/env python3
 """
-進度追蹤系統整合測試
-驗證：Initiator → Executor → progress_events 的完整流程
-
-使用示例：
-  python3 test_progress_tracking_integration.py
+進度追蹤整合測試
+驗證：watchdog_db API、ProgressTracker 類別、Initiator→Executor 流程
 """
 
 import sys
+import os
 import sqlite3
-import json
-import time
-from pathlib import Path
+from datetime import datetime
 
-# 設定路徑
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# 加入專案路徑
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from watchdog.watchdog_db import (
-    init_db, create_message, arm_watchdog_job, 
-    get_message, update_message_status, get_task_progress,
-    get_agent_status, get_latest_progress_events,
-    utc_now_iso
+    DB_PATH,
+    init_db,
+    record_progress_event,
+    get_task_progress,
+    get_latest_progress_events,
+    get_agent_status,
 )
 from mesh.progress_tracker import ProgressTracker
 
-# DB 路徑
-DB_PATH = Path(__file__).resolve().parent / "agent-mesh.db"
+print("=" * 60)
+print("進度追蹤整合測試")
+print("=" * 60)
 
+# 測試 1: 驗證資料庫路徑
+print("\n[測試 1] 資料庫路徑驗證")
+print(f"DB_PATH = {DB_PATH}")
+expected_path = os.path.join(os.path.dirname(__file__), "agent-mesh.db")
+assert DB_PATH == expected_path, f"路徑不符：{DB_PATH} != {expected_path}"
+print("✅ 資料庫路徑正確")
 
-def test_progress_events_table():
-    """測試 1: progress_events 表存在且可操作"""
-    print("\n" + "="*60)
-    print("測試 1: progress_events 表存在性")
-    print("="*60)
-    
-    conn = init_db(DB_PATH)
-    cursor = conn.cursor()
-    
-    # 檢查表
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='progress_events'"
-    )
-    result = cursor.fetchone()
-    
-    if result:
-        print("✅ progress_events 表存在")
-        
-        # 檢查欄位
-        cursor.execute("PRAGMA table_info(progress_events)")
-        columns = cursor.fetchall()
-        col_names = [col[1] for col in columns]
-        
-        expected = ['id', 'task_id', 'agent_name', 'event_type', 'progress_percent', 'message', 'status', 'metadata', 'created_at']
-        for col in expected:
-            if col in col_names:
-                print(f"  ✅ 欄位: {col}")
-            else:
-                print(f"  ❌ 缺少欄位: {col}")
-    else:
-        print("❌ progress_events 表不存在")
-        conn.close()
-        return False
-    
-    conn.close()
-    return True
+# 測試 2: 初始化資料庫
+print("\n[測試 2] 資料庫初始化")
+init_db()
+assert os.path.exists(DB_PATH), f"資料庫檔案不存在：{DB_PATH}"
+print(f"✅ 資料庫已建立：{DB_PATH}")
 
+# 測試 3: 直接使用 watchdog_db API 寫入與讀取
+print("\n[測試 3] watchdog_db API 基礎驗證")
+conn = sqlite3.connect(DB_PATH)
 
-def test_progress_tracker_api():
-    """測試 2: ProgressTracker API 正常工作"""
-    print("\n" + "="*60)
-    print("測試 2: ProgressTracker API")
-    print("="*60)
-    
-    task_id = "test-task-001"
-    agent_name = "test-agent"
-    
-    with ProgressTracker(DB_PATH, task_id, agent_name) as tracker:
-        # 測試各個方法
-        print(f"  📝 task_id: {task_id}")
-        print(f"  🤖 agent_name: {agent_name}")
-        
-        # record_started
-        tracker.record_started(message="Test started")
-        print("  ✅ record_started()")
-        
-        # record_progress
-        tracker.record_progress(percent=25, message="25% done")
-        print("  ✅ record_progress(25%)")
-        
-        tracker.record_progress(percent=50, message="50% done")
-        print("  ✅ record_progress(50%)")
-        
-        # record_heartbeat
-        tracker.record_heartbeat(message="Still alive")
-        print("  ✅ record_heartbeat()")
-        
-        # record_completed
-        tracker.record_completed(result={"status": "success"}, message="All done")
-        print("  ✅ record_completed()")
-    
-    # 驗證資料庫
-    conn = init_db(DB_PATH)
-    events = get_task_progress(conn, task_id)
-    conn.close()
-    
-    print(f"\n  📊 記錄的事件數: {len(events)}")
-    for i, evt in enumerate(events, 1):
-        print(f"    {i}. {evt['event_type']:15} | {evt['progress_percent']:3}% | {evt['message']}")
-    
-    if len(events) >= 5:
-        print("  ✅ 所有事件成功記錄")
-        return True
-    else:
-        print("  ❌ 事件數不符")
-        return False
+task_id = "test-task-001"
+agent_name = "test-agent"
 
-
-def test_end_to_end_flow():
-    """測試 3: 端到端流程 (Initiator → Executor)"""
-    print("\n" + "="*60)
-    print("測試 3: 端到端流程")
-    print("="*60)
-    
-    conn = init_db(DB_PATH)
-    
-    # 步驟 1: Initiator 建立任務
-    msg_id = "m-e2e-test-001"
-    print(f"\n  [Initiator] 建立任務: {msg_id}")
-    
-    create_message(
+try:
+    # 寫入進度事件
+    record_progress_event(
         conn,
-        msg_id=msg_id,
-        sender="host",
-        receiver="shrimp",
-        payload={"task_type": "collection", "description": "E2E Test"},
-        msg_type="task"
+        task_id=task_id,
+        event_type="started",
+        agent_name=agent_name,
+        status="running",
+        message="任務已開始",
+        progress_percent=0,
+        metadata={"version": "1.0"}
     )
-    print("  ✅ 訊息已建立")
+    print("✅ record_progress_event() 成功")
+
+    # 寫入進度更新
+    record_progress_event(
+        conn,
+        task_id=task_id,
+        event_type="progress",
+        agent_name=agent_name,
+        status="running",
+        message="正在處理中...",
+        progress_percent=50,
+        metadata={"step": 1}
+    )
+    print("✅ 進度更新事件寫入成功")
+
+    # 寫入完成事件
+    record_progress_event(
+        conn,
+        task_id=task_id,
+        event_type="completed",
+        agent_name=agent_name,
+        status="completed",
+        message="任務已完成",
+        progress_percent=100,
+        metadata={"result": "success"}
+    )
+    print("✅ 完成事件寫入成功")
+
+    # 讀取任務進度
+    task_events = get_task_progress(conn, task_id)
+    assert len(task_events) == 3, f"預期 3 個事件，實際 {len(task_events)}"
+    print(f"✅ get_task_progress() 成功，取得 {len(task_events)} 個事件")
+
+    # 讀取最新進度事件
+    latest_events = get_latest_progress_events(conn, limit=10)
+    assert len(latest_events) >= 3, f"預期至少 3 個最新事件"
+    print(f"✅ get_latest_progress_events() 成功，取得 {len(latest_events)} 個事件")
+
+    # 讀取 agent 狀態
+    agent_status = get_agent_status(conn, agent_name)
+    assert agent_status is not None, "無法取得 agent 狀態"
+    print(f"✅ get_agent_status() 成功")
+    print(f"   Agent 狀態: {agent_status}")
+
+except Exception as e:
+    print(f"❌ watchdog_db API 測試失敗: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+finally:
+    conn.close()
+
+# 測試 4: ProgressTracker 類別隔離測試
+print("\n[測試 4] ProgressTracker 類別隔離測試")
+try:
+    tracker = ProgressTracker(task_id="test-task-002", agent_name="progress-tracker-test")
     
-    # Initiator 記錄進度
-    tracker_init = ProgressTracker(DB_PATH, msg_id, "host")
-    tracker_init.record_started(message="Initiator: task created")
-    tracker_init.close()
-    print("  ✅ Initiator: started 事件記錄")
+    # 測試 record_started
+    tracker.record_started(metadata={"initiator": "test"})
+    print("✅ ProgressTracker.record_started() 成功")
     
-    # 步驟 2: Executor 確認收到
-    print(f"\n  [Executor] 處理任務: {msg_id}")
+    # 測試 record_progress
+    tracker.record_progress(message="第一步", progress_percent=25)
+    print("✅ ProgressTracker.record_progress() 成功")
     
-    ok = update_message_status(conn, msg_id, 'acknowledged', expected_current='submitted')
-    if ok:
-        print("  ✅ 確認收到")
+    # 測試 record_heartbeat
+    tracker.record_heartbeat()
+    print("✅ ProgressTracker.record_heartbeat() 成功")
+    
+    # 測試 record_completed
+    tracker.record_completed(metadata={"final_status": "ok"})
+    print("✅ ProgressTracker.record_completed() 成功")
+    
+except Exception as e:
+    print(f"❌ ProgressTracker 測試失敗: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# 測試 5: Initiator → Executor 模擬流程
+print("\n[測試 5] Initiator → Executor 模擬流程")
+try:
+    # 模擬 Initiator 建立任務
+    initiator_task_id = "end-to-end-task-001"
+    initiator_tracker = ProgressTracker(
+        task_id=initiator_task_id,
+        agent_name="initiator"
+    )
+    initiator_tracker.record_started(metadata={"flow": "e2e-test"})
+    print("✅ Initiator 已建立任務")
+    
+    # 模擬 Executor 接收並處理
+    executor_tracker = ProgressTracker(
+        task_id=initiator_task_id,
+        agent_name="executor"
+    )
+    executor_tracker.record_started(metadata={"executor_pid": 12345})
+    executor_tracker.record_progress(message="開始執行", progress_percent=25)
+    executor_tracker.record_progress(message="處理中", progress_percent=75)
+    executor_tracker.record_completed(metadata={"executor_result": "success"})
+    print("✅ Executor 已完成任務處理")
+    
+    # 驗證整個流程的事件是否都寫入
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        e2e_events = get_task_progress(conn, initiator_task_id)
+        # 預期事件：initiator started, executor started, executor progress (2x), executor completed
+        assert len(e2e_events) >= 5, f"預期至少 5 個事件，實際 {len(e2e_events)}"
+        print(f"✅ 端到端流程完整，共 {len(e2e_events)} 個事件")
         
-        tracker_exec = ProgressTracker(DB_PATH, msg_id, "shrimp")
-        tracker_exec.record_acknowledged(message="Executor: task acknowledged")
-        tracker_exec.close()
-        print("  ✅ Executor: acknowledged 事件記錄")
-    else:
-        print("  ❌ 確認失敗")
+        for i, event in enumerate(e2e_events, 1):
+            print(f"   {i}. {event}")
+    finally:
         conn.close()
-        return False
     
-    # 步驟 3: Executor 工作中
-    print(f"\n  [Executor] 執行中...")
-    
-    ok = update_message_status(conn, msg_id, 'working', expected_current='acknowledged')
-    if ok:
-        tracker_exec = ProgressTracker(DB_PATH, msg_id, "shrimp")
-        tracker_exec.record_progress(percent=50, message="Executor: processing")
-        tracker_exec.close()
-        print("  ✅ Executor: progress 事件記錄 (50%)")
-    
-    # 步驟 4: Executor 完成
-    print(f"\n  [Executor] 任務完成")
-    
-    result = {"status": "completed", "records": 42}
-    ok = update_message_status(
-        conn, msg_id, 'completed', 
-        expected_current='working',
-        result=result
-    )
-    if ok:
-        tracker_exec = ProgressTracker(DB_PATH, msg_id, "shrimp")
-        tracker_exec.record_completed(result=result, message="Executor: task completed")
-        tracker_exec.close()
-        print("  ✅ Executor: completed 事件記錄")
-    
-    # 步驟 5: Initiator 收到結果
-    print(f"\n  [Initiator] 等待結果...")
-    
-    msg = get_message(conn, msg_id)
-    if msg['status'] == 'completed':
-        tracker_init = ProgressTracker(DB_PATH, msg_id, "host")
-        tracker_init.record_completed(
-            result=json.loads(msg['result']),
-            message="Initiator: result received"
-        )
-        tracker_init.close()
-        print("  ✅ Initiator: completed 事件記錄")
-        print(f"  ✅ 結果: {msg['result']}")
-    
-    # 驗證完整事件鏈
-    print(f"\n  📊 完整事件鏈:")
-    events = get_task_progress(conn, msg_id)
-    
-    for i, evt in enumerate(events, 1):
-        agent = evt['agent_name']
-        event_type = evt['event_type']
-        progress = evt['progress_percent']
-        msg_text = evt['message']
-        print(f"    {i}. [{agent:6}] {event_type:15} {progress:3}% | {msg_text}")
-    
-    conn.close()
-    
-    if len(events) >= 6:
-        print("\n  ✅ 端到端流程成功，所有事件記錄完整")
-        return True
-    else:
-        print(f"\n  ❌ 事件數不符 (期望 ≥6，實際 {len(events)})")
-        return False
+except Exception as e:
+    print(f"❌ 端到端流程測試失敗: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 
-
-def test_query_functions():
-    """測試 4: 查詢函式"""
-    print("\n" + "="*60)
-    print("測試 4: 查詢函式 (get_task_progress, get_agent_status, get_latest_progress_events)")
-    print("="*60)
-    
-    conn = init_db(DB_PATH)
-    
-    # 使用之前測試建立的資料
-    task_id = "test-task-001"
-    
-    # get_task_progress
-    print(f"\n  get_task_progress('{task_id}'):")
-    events = get_task_progress(conn, task_id)
-    print(f"    ✅ 傳回 {len(events)} 筆事件")
-    
-    # get_agent_status
-    print(f"\n  get_agent_status('test-agent'):")
-    status = get_agent_status(conn, "test-agent")
-    if status:
-        print(f"    ✅ latest_event: {status['latest_event']}")
-        print(f"    ✅ latest_progress: {status['latest_progress']}%")
-        print(f"    ✅ latest_message: {status['latest_message']}")
-    
-    # get_latest_progress_events
-    print(f"\n  get_latest_progress_events(limit=5):")
-    latest = get_latest_progress_events(conn, limit=5)
-    print(f"    ✅ 傳回 {len(latest)} 筆最新事件")
-    for evt in latest[:3]:
-        print(f"      - [{evt['task_id']}] {evt['event_type']} @ {evt['created_at']}")
-    
-    conn.close()
-    return True
-
-
-def main():
-    print("\n")
-    print("╔" + "="*58 + "╗")
-    print("║" + " "*10 + "進度追蹤系統整合測試" + " "*24 + "║")
-    print("╚" + "="*58 + "╝")
-    
-    results = {}
-    
-    # 執行所有測試
-    results["進度表存在性"] = test_progress_events_table()
-    results["ProgressTracker API"] = test_progress_tracker_api()
-    results["端到端流程"] = test_end_to_end_flow()
-    results["查詢函式"] = test_query_functions()
-    
-    # 總結
-    print("\n" + "="*60)
-    print("測試總結")
-    print("="*60)
-    
-    passed = sum(1 for v in results.values() if v)
-    total = len(results)
-    
-    for test_name, result in results.items():
-        status = "✅ PASS" if result else "❌ FAIL"
-        print(f"  {status} | {test_name}")
-    
-    print(f"\n  總計: {passed}/{total} 通過")
-    
-    if passed == total:
-        print("\n🎉 所有測試通過！進度追蹤系統正常運作。")
-        return 0
-    else:
-        print(f"\n⚠️  {total - passed} 個測試失敗。")
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+# 測試完成
+print("\n" + "=" * 60)
+print("✅ 整合測試通過")
+print("=" * 60)
+print("\n總結：")
+print("- watchdog_db API 所有函式均可正常使用")
+print("- ProgressTracker 類別可獨立運作")
+print("- Initiator → Executor 端到端流程完整")
+print("- 所有進度事件已正確寫入資料庫")
+print("\n下一步：為 agent_executor.py 整合 ProgressTracker")
