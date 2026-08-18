@@ -116,6 +116,19 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
             creator          TEXT NOT NULL DEFAULT 'watchdog'
         );
 
+        CREATE TABLE IF NOT EXISTS progress_events (
+            event_id         TEXT PRIMARY KEY,
+            task_id          TEXT NOT NULL,
+            agent_name       TEXT,
+            event_type       TEXT NOT NULL,                   -- 'started', 'heartbeat', 'progress', 'completed', 'failed', 'acknowledged'
+            status           TEXT,                            -- current message status
+            progress_percent INTEGER,                         -- 0-100
+            message          TEXT,                            -- human-readable
+            metadata         TEXT,                            -- JSON
+            created_at       TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES messages(msg_id)
+        );
+
         CREATE TABLE IF NOT EXISTS config (
             config_key       TEXT PRIMARY KEY,
             config_value     TEXT NOT NULL
@@ -238,6 +251,94 @@ def get_messages_by_statuses(
         f"SELECT * FROM messages WHERE status IN ({placeholders}) ORDER BY updated_at LIMIT ?",
         statuses + [limit],
     ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+# Progress Events Tracking
+# ──────────────────────────────────────────────
+
+def record_progress_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    event_type: str,
+    agent_name: Optional[str] = None,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    progress_percent: Optional[int] = None,
+    metadata: Optional[dict] = None,
+) -> str:
+    """
+    記錄一個進度事件。
+    
+    Args:
+        task_id: 任務 ID（message.msg_id）
+        event_type: 事件類型 ('started', 'heartbeat', 'progress', 'acknowledged', 'completed', 'failed')
+        agent_name: Agent 名稱
+        status: 當前訊息狀態
+        message: 人類可讀的訊息
+        progress_percent: 進度百分比 (0-100)
+        metadata: 額外元數據
+    
+    Returns:
+        event_id
+    """
+    event_id = f"EVT-{uuid.uuid4().hex[:12].upper()}"
+    now = utc_now_iso()
+    conn.execute("""
+        INSERT INTO progress_events
+            (event_id, task_id, agent_name, event_type, status, message, progress_percent, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event_id, task_id, agent_name, event_type, status, message,
+        progress_percent,
+        json.dumps(metadata) if metadata else None,
+        now
+    ))
+    conn.commit()
+    return event_id
+
+
+def get_task_progress(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """取得某個任務的完整進度事件列表。"""
+    rows = conn.execute("""
+        SELECT * FROM progress_events 
+        WHERE task_id = ? 
+        ORDER BY created_at ASC
+    """, (task_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_agent_status(conn: sqlite3.Connection, agent_name: str) -> Optional[dict]:
+    """取得某個 Agent 最後一次的進度事件。"""
+    row = conn.execute("""
+        SELECT * FROM progress_events 
+        WHERE agent_name = ? 
+        ORDER BY created_at DESC 
+        LIMIT 1
+    """, (agent_name,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_progress_events(
+    conn: sqlite3.Connection, 
+    limit: int = 50,
+    agent_name: Optional[str] = None
+) -> list[dict]:
+    """取得最新的進度事件。"""
+    if agent_name:
+        rows = conn.execute("""
+            SELECT * FROM progress_events 
+            WHERE agent_name = ? 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        """, (agent_name, limit)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM progress_events 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        """, (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 
