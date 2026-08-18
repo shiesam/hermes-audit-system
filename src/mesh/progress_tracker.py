@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from watchdog_db import (
+from watchdog.watchdog_db import (
     init_db,
     record_progress_event,
     get_task_progress,

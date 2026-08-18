@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 Progress Tracker 整合測試
-直接操作 watchdog_db 的 progress_events 表，驗證：
-- record_progress_event() 寫入
-- get_task_progress() 讀取
-- get_agent_status() 讀取
-- get_latest_progress_events() 讀取
-使用專案根目錄的 agent-mesh.db（與生產環境相同路徑）。
+
+測試 record_progress_event / get_task_progress / get_agent_status / get_latest_progress_events
+使用專案根目錄 agent-mesh.db
+
+注意：get_task_progress 回傳的 metadata 字段是 JSON 字串（而非 dict），需 json.loads 處理。
 """
+
+import json
 import sys
 import sqlite3
 from pathlib import Path
 
-# 讓 Python 能 import src/watchdog/watchdog_db.py
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from watchdog_db import (
+from watchdog.watchdog_db import (
     init_db,
     record_progress_event,
     get_task_progress,
@@ -29,22 +29,34 @@ TEST_AGENT = "test-agent"
 
 
 def clear_test_data(conn: sqlite3.Connection) -> None:
-    """清除測試任務的進度事件，避免污染。"""
+    """清除測試 agent 的所有進度事件，確保測試隔離。"""
     conn.execute(
-        "DELETE FROM progress_events WHERE task_id = ?",
-        (TEST_TASK_ID,)
+        "DELETE FROM progress_events WHERE agent_name = ?",
+        (TEST_AGENT,)
     )
     conn.commit()
 
 
+def parse_metadata(raw) -> dict | None:
+    """將原始 metadata 字段轉為 dict（若為 JSON 字串）。"""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+    return {"_raw": str(raw)}
+
+
 def test_record_progress_event():
-    """測試寫入與讀取單一進度事件。"""
+    """寫入與讀取單一進度事件。"""
     print("=== test_record_progress_event ===")
     conn = init_db(DB_PATH)
     try:
         clear_test_data(conn)
-
-        # 寫入
         event_id = record_progress_event(
             conn,
             task_id=TEST_TASK_ID,
@@ -55,165 +67,181 @@ def test_record_progress_event():
         )
         assert event_id is not None
         print(f"  ✅ record_progress_event 返回 event_id: {event_id}")
-
-        # 讀取該任務所有事件
         events = get_task_progress(conn, TEST_TASK_ID)
-        assert len(events) == 1, f"預期 1 個事件，實際 {len(events)}"
+        assert len(events) == 1
         ev = events[0]
         assert ev["task_id"] == TEST_TASK_ID
         assert ev["event_type"] == "started"
         assert ev["agent_name"] == TEST_AGENT
         assert ev["progress_percent"] == 0
         print(f"  ✅ get_task_progress 讀取正確：{ev}")
-
-        # 讀取 agent status
         status = get_agent_status(conn, TEST_AGENT)
         assert status is not None
         assert status["agent_name"] == TEST_AGENT
         print(f"  ✅ get_agent_status 正確：{status}")
-
     finally:
         conn.close()
-
     print()
 
 
-def test_multiple_events():
-    """測試寫入與讀取多個進度事件。"""
-    print("=== test_multiple_events ===")
+def test_progress_percent():
+    """使用不同進度百分比。"""
+    print("=== test_progress_percent ===")
+    conn = init_db(DB_PATH)
+    try:
+        clear_test_data(conn)
+        for pct, msg in [(25, "進行中 25%"), (50, "進行中 50%"), (75, "進行中 75%"), (100, "已完成")]:
+            record_progress_event(
+                conn,
+                task_id=TEST_TASK_ID,
+                event_type="progress",
+                agent_name=TEST_AGENT,
+                message=msg,
+                progress_percent=pct,
+            )
+        events = get_task_progress(conn, TEST_TASK_ID)
+        assert len(events) == 4
+        pcts = [e["progress_percent"] for e in events]
+        assert pcts == [25, 50, 75, 100]
+        print(f"  ✅ 進度序列正確：{pcts}")
+    finally:
+        conn.close()
+    print()
+
+
+def test_heartbeat():
+    """heartbeat 事件不帶 progress_percent。"""
+    print("=== test_heartbeat ===")
+    conn = init_db(DB_PATH)
+    try:
+        clear_test_data(conn)
+        record_progress_event(
+            conn,
+            task_id=TEST_TASK_ID,
+            event_type="heartbeat",
+            agent_name=TEST_AGENT,
+            message="心跳",
+        )
+        events = get_task_progress(conn, TEST_TASK_ID)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "heartbeat"
+        assert events[0]["progress_percent"] is None
+        print("  ✅ heartbeat 事件無 progress_percent，正確")
+    finally:
+        conn.close()
+    print()
+
+
+def test_completed_and_failed():
+    """completed 與 failed 事件（含 metadata 驗證）。"""
+    print("=== test_completed_and_failed ===")
     conn = init_db(DB_PATH)
     try:
         clear_test_data(conn)
 
-        # 寫入多個事件
-        messages = [
-            ("started", 0, "任務開始"),
-            ("progress", 25, "進度 25%"),
-            ("progress", 50, "進度 50%"),
-            ("progress", 75, "進度 75%"),
-            ("completed", 100, "任務完成"),
-        ]
+        # completed 事件：metadata 包含 {"result": {"status": "ok"}}
+        eid1 = record_progress_event(
+            conn,
+            task_id=TEST_TASK_ID,
+            event_type="completed",
+            agent_name=TEST_AGENT,
+            message="任務完成",
+            progress_percent=100,
+            metadata={"result": {"status": "ok"}},
+        )
+        print(f"  ✅ completed event_id: {eid1}")
 
-        event_ids = []
-        for event_type, progress, message in messages:
-            eid = record_progress_event(
-                conn,
-                task_id=TEST_TASK_ID,
-                event_type=event_type,
-                agent_name=TEST_AGENT,
-                message=message,
-                progress_percent=progress,
-            )
-            event_ids.append(eid)
-            print(f"  ✅ 寫入 {event_type:12} ({progress:3}%) → event_id: {eid}")
+        # failed 事件：metadata 包含 {"error": "測試錯誤"}
+        FAILED_TASK = f"{TEST_TASK_ID}_failed"
+        eid2 = record_progress_event(
+            conn,
+            task_id=FAILED_TASK,
+            event_type="failed",
+            agent_name=TEST_AGENT,
+            message="任務失敗",
+            metadata={"error": "測試錯誤"},
+        )
+        print(f"  ✅ failed event_id: {eid2}")
 
-        # 讀取所有事件
-        events = get_task_progress(conn, TEST_TASK_ID)
-        assert len(events) == 5, f"預期 5 個事件，實際 {len(events)}"
-        print(f"  ✅ 讀取所有事件：共 {len(events)} 筆")
+        # 讀取 completed
+        done_events = get_task_progress(conn, TEST_TASK_ID)
+        assert any(e["event_type"] == "completed" for e in done_events)
+        print("  ✅ completed 事件已記錄")
 
-        # 驗證事件順序
-        for i, (expected_type, expected_progress, _) in enumerate(messages):
-            assert events[i]["event_type"] == expected_type
-            assert events[i]["progress_percent"] == expected_progress
-        print(f"  ✅ 事件順序正確")
+        # 讀取 failed
+        fail_events = get_task_progress(conn, FAILED_TASK)
+        assert any(e["event_type"] == "failed" for e in fail_events)
+        print("  ✅ failed 事件已記錄")
+
+        # 驗證 metadata（需 json.loads，因 DB 儲存為 JSON 字串）
+        for ev in done_events:
+            if ev["event_type"] == "completed":
+                meta = parse_metadata(ev["metadata"])
+                assert meta is not None and meta.get("result", {}).get("status") == "ok"
+                print(f"  ✅ completed metadata: {meta}")
+
+        for ev in fail_events:
+            if ev["event_type"] == "failed":
+                meta = parse_metadata(ev["metadata"])
+                assert meta is not None and meta.get("error") == "測試錯誤"
+                print(f"  ✅ failed metadata: {meta}")
 
     finally:
         conn.close()
-
     print()
 
 
 def test_get_latest_progress_events():
-    """測試讀取最新進度事件。"""
+    """獲取最新進度事件（限源）。"""
     print("=== test_get_latest_progress_events ===")
     conn = init_db(DB_PATH)
     try:
-        # 讀取最新 10 筆
-        latest = get_latest_progress_events(conn, limit=10)
-        assert isinstance(latest, list)
-        print(f"  ✅ get_latest_progress_events 返回 {len(latest)} 筆事件")
-
-        # 驗證排序（應該是最新的在前）
-        if len(latest) > 1:
-            for i in range(len(latest) - 1):
-                # created_at 應該遞減（越往後越早）
-                assert latest[i]["created_at"] >= latest[i + 1]["created_at"]
-            print(f"  ✅ 事件順序正確（newest first）")
-
-    finally:
-        conn.close()
-
-    print()
-
-
-def test_agent_status_multiple_agents():
-    """測試多個 agent 的狀態查詢。"""
-    print("=== test_agent_status_multiple_agents ===")
-    conn = init_db(DB_PATH)
-    try:
-        # 為不同 agent 寫入事件
-        agents = [
-            ("agent-001", "started", 0),
-            ("agent-002", "progress", 50),
-            ("agent-003", "completed", 100),
-        ]
-
-        for agent_name, event_type, progress in agents:
+        clear_test_data(conn)
+        for i in range(3):
             record_progress_event(
                 conn,
-                task_id=f"test_multi_{agent_name}",
-                event_type=event_type,
-                agent_name=agent_name,
-                message=f"{agent_name} 事件",
-                progress_percent=progress,
+                task_id=TEST_TASK_ID,
+                event_type=f"step_{i}",
+                agent_name=TEST_AGENT,
+                message=f"步驟 {i}",
+                progress_percent=i * 33,
             )
-
-        # 讀取各 agent 狀態
-        for agent_name, _, expected_progress in agents:
-            status = get_agent_status(conn, agent_name)
-            assert status is not None
-            assert status["agent_name"] == agent_name
-            print(f"  ✅ {agent_name}: {status}")
-
+        latest = get_latest_progress_events(conn, limit=2)
+        assert len(latest) == 2, f"預期 2 個，實際 {len(latest)}"
+        # get_latest_progress_events 按 created_at DESC 回傳（最新優先）
+        assert latest[0]["event_type"] == "step_2", f"latest[0] 應為 step_2，實際 {latest[0]['event_type']}"
+        assert latest[1]["event_type"] == "step_1", f"latest[1] 應為 step_1，實際 {latest[1]['event_type']}"
+        print(f"  ✅ 最新 2 個事件（由新至舊）: {[e['event_type'] for e in latest]}")
+        all_events = get_latest_progress_events(conn, limit=10)
+        assert len(all_events) == 3
+        print(f"  ✅ 全部事件數量：{len(all_events)}")
     finally:
         conn.close()
-
     print()
 
 
 def main():
-    print("\n" + "=" * 60)
-    print("Progress Tracker 整合測試")
-    print("=" * 60)
-    print(f"DB_PATH: {DB_PATH}")
-    print(f"TEST_TASK_ID: {TEST_TASK_ID}")
-    print(f"TEST_AGENT: {TEST_AGENT}")
+    print(f"📁 資料庫路徑: {DB_PATH}")
+    print(f"🆔 測試任務 ID: {TEST_TASK_ID}")
+    print(f"🤖 測試 Agent: {TEST_AGENT}")
     print()
-
     try:
         test_record_progress_event()
-        test_multiple_events()
+        test_progress_percent()
+        test_heartbeat()
+        test_completed_and_failed()
         test_get_latest_progress_events()
-        test_agent_status_multiple_agents()
-
-        print("=" * 60)
-        print("✅ 整合測試全部通過")
-        print("=" * 60)
-        return 0
-
-    except AssertionError as e:
-        print(f"\n❌ 測試失敗: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-
+        print("=" * 50)
+        print("  ✅ 所有 Progress Tracker 整合測試通過")
+        print("=" * 50)
     except Exception as e:
-        print(f"\n❌ 執行出錯: {e}")
         import traceback
+        print("=" * 50)
+        print(f"  ❌ 測試失敗：{e}")
+        print("=" * 50)
         traceback.print_exc()
-        return 1
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
