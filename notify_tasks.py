@@ -234,7 +234,7 @@ def run_once(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes 任務通知腳本")
-    parser.add_argument("--db", type=Path, default=REPO_ROOT / "agent-mesh.db")
+    parser.add_argument("--db", type=Path, default=Path("/srv/samba/hermes-audit/agent-mesh.db"))
     parser.add_argument("--receiver", default="host")
     parser.add_argument("--deliver", default="origin")
     parser.add_argument("--state-file", type=Path, default=Path("/var/tmp/hermes-notify-state.json"))

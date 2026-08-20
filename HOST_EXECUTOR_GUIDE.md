@@ -22,11 +22,6 @@ ls src/watchdog/watchdog_db.py   # 應存在
 
 主機的 DB 通常在：
 ```
-/home/vboxuser/hermes-audit-system/agent-mesh.db
-```
-
-若主機透過 Samba 共享 DB 給蝦米：
-```
 /srv/samba/hermes-audit/agent-mesh.db
 ```
 
@@ -120,7 +115,7 @@ python3 test_host_executor.py --db /path/to/agent-mesh.db --once
 ============================================================
   🖥️  主機執行端 (Host Executor) — 端到端測試
   監聽對象: shrimp 的訊息
-  資料庫:   /home/vboxuser/hermes-audit-system/agent-mesh.db
+  資料庫:   /srv/samba/hermes-audit/agent-mesh.db
   輪詢間隔: 5s
   模式:     持續監聽（Ctrl+C 停止）
 ============================================================

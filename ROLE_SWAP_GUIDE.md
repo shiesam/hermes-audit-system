@@ -339,7 +339,7 @@ python watchdog_db.py run
 
 ❌ **問題**
 ```python
-# 主機用的 DB: /home/vboxuser/agent-mesh.db
+# 主機用的 DB: /srv/samba/hermes-audit/agent-mesh.db
 # 蝦米用的 DB: C:\Users\...\agent-mesh.db
 # ← 兩個不同的資料庫，無法協作！
 ```

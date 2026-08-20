@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, '/home/vboxuser/hermes-audit-system')
 from watchdog_db import *
 
-DB = Path('/home/vboxuser/hermes-audit-system/agent-mesh.db')
+DB = Path('/srv/samba/hermes-audit/agent-mesh.db')
 
 def section(title):
     print(f"\n{'='*60}")
