@@ -356,7 +356,7 @@ tail -f /var/log/hermes-watchdog.log
 
 ```bash
 # 1) 安裝通知腳本與 systemd 設定
-cd /home/vboxuser/hermes-audit-system
+cd ~/hermes-audit-system
 sudo cp hermes-notify.service /etc/systemd/system/hermes-notify.service
 sudo cp hermes-notify.timer /etc/systemd/system/hermes-notify.timer
 
@@ -374,6 +374,8 @@ tail -f /var/log/hermes-notify.log
 預期：
 - 出現新任務或狀態變更時，`/var/log/hermes-notify.log` 會輸出表格
 - 無任務時輸出 `idle: 無新任務`
+
+> 註：`hermes-notify.service` 依需求預設 `User=vboxuser`。若你的主機使用不同帳號，請先調整 service 檔再啟動。
 
 ---
 

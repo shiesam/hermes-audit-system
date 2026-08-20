@@ -17,7 +17,7 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -25,7 +25,7 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from watchdog.watchdog_db import init_db, utc_now_iso
+from watchdog.watchdog_db import init_db
 
 ACTIVE_STATUSES = ("submitted", "acknowledged", "working", "input-required")
 FINAL_STATUSES = ("completed", "failed", "cancelled")
@@ -193,7 +193,7 @@ def setup_logger(log_file: Path | None) -> logging.Logger:
 def run_once(
     db_path: Path,
     receiver: str,
-    deliver: str,
+    deliver_target: str,
     state_file: Path,
     logger: logging.Logger,
 ) -> int:
@@ -212,9 +212,9 @@ def run_once(
             msg_ids=set(previous_state.keys()) - set(current_state.keys()),
         )
 
-        now = datetime.now().strftime("%H:%M:%S")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if changed_rows:
-            logger.info(f"[{now}] 📬 檢測到新任務/任務進展（deliver={deliver}）")
+            logger.info(f"[{now}] 📬 檢測到新任務/任務進展（deliver={deliver_target}）")
             logger.info(render_task_table(changed_rows))
 
         for row in finalized_rows:
@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--receiver", default="host")
     parser.add_argument("--deliver", default="origin")
     parser.add_argument("--state-file", type=Path, default=Path("/var/tmp/hermes-notify-state.json"))
-    parser.add_argument("--log-file", type=Path, default=Path("/var/log/hermes-notify.log"))
+    parser.add_argument("--log-file", type=Path, default=None)
     parser.add_argument("--loop", action="store_true", help="持續執行，每次間隔由 --interval 指定")
     parser.add_argument("--interval", type=float, default=2.0, help="輪詢秒數（--loop 模式使用）")
     return parser
