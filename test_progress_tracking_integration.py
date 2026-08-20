@@ -23,7 +23,7 @@ from watchdog.watchdog_db import (
     get_latest_progress_events,
 )
 
-DB_PATH = Path(__file__).resolve().parent / "agent-mesh.db"
+DB_PATH = Path("/srv/samba/hermes-audit/agent-mesh.db")
 TEST_TASK_ID = "test_integration_001"
 TEST_AGENT = "test-agent"
 

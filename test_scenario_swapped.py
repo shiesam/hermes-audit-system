@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from watchdog_db import *
 
-DB = Path(__file__).resolve().parent / "agent-mesh.db"
+DB = Path("/srv/samba/hermes-audit/agent-mesh.db")
 
 def section(title):
     print(f"\n{'='*60}")

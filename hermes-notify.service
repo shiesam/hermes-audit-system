@@ -5,8 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=vboxuser
-WorkingDirectory=%h/hermes-audit-system
-ExecStart=/usr/bin/python3 %h/hermes-audit-system/notify_tasks.py --db %h/hermes-audit-system/agent-mesh.db --receiver host --deliver origin --state-file /var/tmp/hermes-notify-state.json
+WorkingDirectory=/home/vboxuser/hermes-audit-system
+ExecStart=/usr/bin/python3 /home/vboxuser/hermes-audit-system/notify_tasks.py --db /srv/samba/hermes-audit/agent-mesh.db --receiver host --deliver origin --state-file /var/tmp/hermes-notify-state.json --loop --interval 2
 Restart=on-failure
 RestartSec=2
 StandardOutput=append:/var/log/hermes-notify.log

@@ -64,7 +64,7 @@ except ImportError as e:
 
 SELF_AGENT = "shrimp"
 OTHER_AGENT = "host"
-DEFAULT_DB = REPO_ROOT / "agent-mesh.db"
+DEFAULT_DB = Path("/srv/samba/hermes-audit/agent-mesh.db")
 POLL_INTERVAL = 5  # 秒
 SEPARATOR = "=" * 60
 
