@@ -63,6 +63,10 @@ sudo nano /etc/samba/smb.conf
    force user = vboxuser
 ```
 
+> ⚠️ **安全提示**：以上設定允許區域網路上所有裝置無需密碼讀寫 DB 文件。  
+> 在正式環境中，建議改用 Samba 使用者帳號驗證（移除 `guest ok = yes`，改用 `valid users`）。  
+> 測試環境中確保 VirtualBox 使用 Host-only 或 Internal 網路，降低暴露風險。
+
 ```bash
 # 重啟 Samba
 sudo systemctl restart smbd nmbd

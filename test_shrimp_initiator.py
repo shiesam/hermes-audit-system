@@ -110,12 +110,12 @@ def create_task(
     tracker.close()
 
     # 3. Arm watchdog
-    threshold = threshold_override or DEFAULT_THRESHOLDS.get(task_type, 300)
+    threshold = threshold_override if threshold_override is not None else DEFAULT_THRESHOLDS.get(task_type, 300)
     wd_tag = arm_watchdog_job(
         conn,
         msg_id=msg_id,
         kind=task_type,
-        threshold_override=threshold_override,
+        threshold_override=threshold,
         label=f"task-{task_type}",
     )
     print(f"✅ Arm Watchdog: {wd_tag}")

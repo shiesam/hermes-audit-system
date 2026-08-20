@@ -246,7 +246,7 @@ def run_executor(
     print(f"  輪詢間隔: {poll_interval}s")
     if once:
         print(f"  模式:     單次掃描（--once）")
-    elif max_iterations:
+    elif max_iterations is not None:
         print(f"  最大輪詢: {max_iterations} 次")
     else:
         print(f"  模式:     持續監聽（Ctrl+C 停止）")
@@ -271,7 +271,7 @@ def run_executor(
         while True:
             iteration += 1
 
-            if max_iterations and iteration > max_iterations:
+            if max_iterations is not None and iteration > max_iterations:
                 print(f"\n✅ 達到最大迭代次數 ({max_iterations})，停止")
                 break
 
