@@ -12,15 +12,20 @@
 ├── systemd: hermes-notify.timer (active, waiting)
 │   └── 每 2 秒觸發 hermes-notify.service → notify_tasks.py
 │       查 DB，寫任務摘要到 /var/log/hermes-notify.log
+├── systemd: hermes-watchdog.timer (active, waiting)
+│   └── 每 30 秒觸發一次 hermes-watchdog.service (oneshot)
+│       掃描 watchdog_jobs，偵測卡住的任務，產生/解決 incident
+│       日誌寫到 /var/log/hermes-watchdog.log
 ├── Samba 共享: /srv/samba/hermes-audit/ (帳密 hermes/hermes-audit-2026)
 │   └── agent-mesh.db (hermes:hermes, 664)
 │       ├── messages 表: 目前 1 條 (m-4efbf2f1, shrimp→host, completed)
-│       ├── watchdog_jobs 表: 空
+│       ├── watchdog_jobs 表: 1 條 (WD-DEA455F45E27, disarmed)
 │       ├── incidents 表: 空
 │       └── config 表: 預設 threshold 等設定
 └── 日誌
     ├── /var/log/hermes-executor.log
-    └── /var/log/hermes-notify.log
+    ├── /var/log/hermes-notify.log
+    └── /var/log/hermes-watchdog.log
 
 筆電 蝦米 (shies@MSI, ED25519 登入)
 ├── 執行 agent_initiator.py 或 agent_executor.py
@@ -44,25 +49,28 @@
   │                     notify │  hermes-notify.timer 每 2 秒查
   │                     → log  │  寫任務摘要到 /var/log/hermes-notify.log
   │                            │
+  │                     watchdog│  hermes-watchdog.timer 每 30 秒掃一次
+  │                     → log  │  偵測 stale job，產生/解決 incident
+  │                            │
   └─ 讀結果 ←─────────────────┘  （可透過 DB 查詢）
 ```
 
-## 沒開的部分（現狀）
+## 已開啟的部分
 
-- **Watchdog 掃描**：`watchdog_db.py run` 沒有被定時呼叫。沒 cronjob，也沒 hermes-watchdog.service。
-  - consequence: 訊息卡住不會自動產生 incident，watchdog_jobs 表保持空，incidents 表保持空。
-  - 如果需要這功能，需另外建立 systemd service 或 cronjob 來跑 `watchdog_db.py run`。
+- **Watchdog 掃描**：`hermes-watchdog.timer` 每 30 秒觸發一次 `hermes-watchdog.service`（oneshot），執行 `watchdog_db.py run --db /srv/samba/.../agent-mesh.db`。
+  - consequence: 訊息卡住會自動產生 incident，watchdog_jobs 表會有 job，incidents 表會有 incident（若有卡住的情況）。
+  - 目前因為只有一條已完成的消息，watchdog job 是 disarmed，incidents 表是空的。
 
-- **雙向 heartbeat / watchdog arm**：目前這條 m-4efbf2f1 沒有經歷過 watchdog arm 流程。它是直接 submitted → completed，中間沒有 watchdog job。
+- **雙向 heartbeat / watchdog arm**：目前這條 m-4efbf2f1 沒有經歷過 watchdog arm 流程。它是 Directly submitted → completed，中間沒有 watchdog job。不過架構已經準備好了——若有新任務且有 heartbeat 機制，watchdog 會正常運作。
 
 ## 與 ARCHITECTURE.md（理想設計）的差距
 
 | 設計中的東西 | 實際狀態 |
 |-------------|----------|
 | 雙向角色互換，兩個 agent 都可發起也可執行 | 實際只有 host 當執行端，shrimp 發了一個任務。角色互換程式碼有，但沒演練習。 |
-| watchdog_jobs 表有 arm/stalled/disarmed 狀態流轉 | 實際表是空的，沒跑過 watchdog 掃描。 |
-| incidents 表會有 open → resolved 流轉 | 實際表是空的，沒產生過 incident。 |
-| cronjob/systemd service 跑 watchdog_db.py run | 沒開。 |
+| watchdog_jobs 表有 arm/stalled/disarmed 狀態流轉 | 實際表有 1 條 disarmed job（該任務已完成）。需新任務 + arm 才能看到完整流轉。 |
+| incidents 表會有 open → resolved 流轉 | 實際表是空的（沒卡住的任務）。若有任務卡住，watchdog 會自動建立 incident。 |
+| cronjob/systemd service 跑 watchdog_db.py run | 已開：hermes-watchdog.timer 每 30 秒觸發 hermes-watchdog.service（oneshot）。 |
 | 兩個 agent 都常駐監聽 | 只有 host 常駐 executor，shrimp 目前沒常駐（發完任務就結束了）。 |
 
 ## DB Schema（實際）

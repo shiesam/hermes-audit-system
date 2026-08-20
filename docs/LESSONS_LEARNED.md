@@ -23,7 +23,7 @@
   sys.path.insert(0, str(_SRC_DIR))
   ```
 - 這樣 `from watchdog.watchdog_db import ...` 就找到 `src/watchdog/` 下的套件。
-- 關鍵：這行要在 import 之前執行。不能靠 systemd 的 Environment=PYTHONPATH 來補，因為有些設定下 PATH 不會穿透到 service 裡（或者寫錯了）。
+- 關鍵：這行要在 import 之前執行。不能靠 systemd 的 Environment=PYTHONPATH 來補。
 
 ### 1.3 debug patch 很容易留下爪痕
 
@@ -40,15 +40,29 @@
 - 然後把舊 DB 刪了。
 - lesson: DB 路徑改了要確保每個用到它的檔案都改，包括 service 檔案。否則 executor 會讀錯位 DB，看不到蝦米寫的消息。
 
+### 1.5 watchdog 服務的型別選擇
+
+- `watchdog_db.py run` 是**一次性掃描**（執行完就退出，沒有內部循環）。
+- 一開始想用 `Type=simple` 常駐，但會導致 service 跑完就退出，又立刻重啟，形成不必要的 restart loop。
+- 正確做法：`Type=oneshot` + `systemd timer`。service 每次被 timer 觸發時執行一次掃描，執行完畢 status 變成 inactive (dead)，這是正常的。
+- timer 設定：`OnBootSec=10sec`, `OnUnitActiveSec=30sec`，每 30 秒掃一次。
+- lesson: 判斷腳本是「一次性工作」還是「持續運行的 daemon」，選對 systemd Type。一次性工作用 oneshot + timer，daemon 用 simple/notify，並確保程式裡有無限循環。
+
+### 1.6 CLI 參數順序問題
+
+- `watchdog_db.py` 的 `--db` 選項是全域的（在 `run` 子命令之前），執行時要寫成 `watchdog_db.py --db <路徑> run --interval 30`。
+- 若寫成 `watchdog_db.py run --db <路徑>`，argparse 會認為 `--db` 是 `run` 子命令的參數而報錯（unrecognized arguments）。
+- lesson: 子命令架構的 CLI，全域選項要放在子命令名稱之前。systemd service 的 ExecStart 也要照這個順序寫。
+
 ## 2. 系統設計層面的觀察
 
-### 2.1 現在的狀態是「執行端有常駐，通知有常駐，watchdog 沒開」
+### 2.1 現在的狀態是「執行端有常駐，通知有常駐，watchdog 有開」
 
 - hermes-executor.service: 活著，每 5 秒 poll DB，會自動接 `receiver=host` 的任務。
 - hermes-notify.timer: 活著，每 2 秒查 DB，寫日志。
-- watchdog 掃描: 沒開。meaning: 任務卡住不會自動產生 incident。
+- hermes-watchdog.timer + hermes-watchdog.service (oneshot): 每 30 秒掃一次，偵測卡住的任務，產生/解決 incident。
 
-這是一個有意的簡化還是忘了開？文件寫清楚比較好，不然後來人會以為少了什麼。
+這三個組成了基本的協作基礎設施。
 
 ### 2.2 現有的消息流是單向的
 
@@ -61,14 +75,14 @@
 - SQLite 在網路檔案系統（Samba/NFS）上讀寫要小心。我們目前是 hermes:hermes 755/664，vboxuser 透過 hermes 群組存取。
 - 如果兩個 agent 真的同時寫，同一時間寫入同一個 DB 檔案可能會有 lock 問題。
 - 目前處理方式是：executor 每 5 秒輪詢，shrimp 寫完就結束。沒有常態的並發寫入，所以還 okay。
-- 如果未來真的有兩個 agent 同時寫，可能要考慮别的策略（例如 SQLite WAL mode，或改用別的 DB）。
+- 如果未來真的有兩個 agent 同時寫，可能要考慮别的策略（例如 SQLite WAL mode，或改用别的 DB）。
 
 ## 3. 架構文件該怎麼寫
 
 ### 3.1 分成「理想設計」和「當前實際狀態」兩份
 
 - ARCHITECTURE.md（原本的）寫的是理想設計：雙向角色互換、watchdog 完整流轉、cronjob scanner、 Incident 分級……
-- 但實際跑起來的系統少了 watchdog scanner，也沒演練過完整 watchdog 流程。
+- 實際跑起來的系統現在有 executor 常駐 + notify timer + watchdog timer/service。
 - 建議：保留 ARCHITECTURE.md 作為「設計目標」，另外寫一份 ARCHITECTURE_CURRENT.md（或在同一個檔案裡加「現狀」一節），說明目前實際跑起來的樣子。
 
 ### 3.2 文件裡的指令要確保路徑正確
@@ -91,5 +105,5 @@
 2. **Python 專案有 src/ 套件目錄時，記得在入口檔案裡 insert sys.path。**
 3. **debug patch 要清掉，不然 service 重啟循環會誤導你。**
 4. **DB 路徑一旦改了，掃全部檔案確認沒有舊路徑殘留。**
-5. **現在的系統有 executor 常駐 + notify timer，但 watchdog 掃描沒開。文件要寫清楚這點。**
+5. **現在的系統有 executor 常駐 + notify timer + watchdog timer/service（每 30 秒掃一次）。文件要寫清楚這點。**
 6. **現有消息流是單向的，沒有經歷過 watchdog arm/heartbeat/stalled/incident 流程。**
