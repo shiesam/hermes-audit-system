@@ -11,13 +11,16 @@ notify_tasks.py - Hermes 主機任務通知腳本
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import logging
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -29,6 +32,109 @@ from watchdog.watchdog_db import init_db
 
 ACTIVE_STATUSES = ("submitted", "acknowledged", "working", "input-required")
 FINAL_STATUSES = ("completed", "failed", "cancelled")
+
+# ---------------------------------------------------------------------------
+# Shared in-memory task state (populated by run_once, served by HTTP server)
+# ---------------------------------------------------------------------------
+
+_state_lock = threading.Lock()
+_active_tasks: collections.deque[dict] = collections.deque(maxlen=100)
+_finalized_tasks: collections.deque[dict] = collections.deque(maxlen=50)
+# msg_id -> dict, for dedup / update
+_active_index: dict[str, dict] = {}
+
+
+def _task_to_dict(row: "TaskRow", now_str: str | None = None) -> dict:
+    """Convert a TaskRow to a JSON-serialisable dict."""
+    ts = now_str or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "msg_id": row.msg_id,
+        "task_type": row.task_type,
+        "sender": row.sender,
+        "receiver": row.receiver,
+        "status": row.status,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "elapsed": _format_elapsed(row.created_at, row.updated_at),
+    }
+
+
+def _update_shared_state(
+    active_rows: list["TaskRow"],
+    finalized_rows: list["TaskRow"],
+) -> None:
+    """Push the latest DB snapshot into the shared in-memory collections."""
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _state_lock:
+        # Update / insert active tasks
+        current_ids: set[str] = set()
+        for row in active_rows:
+            d = _task_to_dict(row, now_str)
+            current_ids.add(row.msg_id)
+            if row.msg_id in _active_index:
+                _active_index[row.msg_id].update(d)
+            else:
+                _active_index[row.msg_id] = d
+                _active_tasks.append(_active_index[row.msg_id])
+
+        # Remove tasks that left the active set (they may appear in finalized)
+        gone = set(_active_index.keys()) - current_ids
+        for msg_id in gone:
+            del _active_index[msg_id]
+        if gone:
+            # Rebuild deque without removed tasks
+            remaining = [t for t in _active_tasks if t["msg_id"] not in gone]
+            _active_tasks.clear()
+            _active_tasks.extend(remaining)
+
+        # Append newly finalized tasks (dedup by msg_id)
+        existing_final_ids = {t["msg_id"] for t in _finalized_tasks}
+        for row in finalized_rows:
+            if row.msg_id not in existing_final_ids:
+                _finalized_tasks.append(_task_to_dict(row, now_str))
+
+
+# ---------------------------------------------------------------------------
+# HTTP Server
+# ---------------------------------------------------------------------------
+
+
+class _TasksHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler exposing GET /api/tasks."""
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/api/tasks":
+            self._serve_tasks()
+        else:
+            self.send_error(404, "Not Found")
+
+    def _serve_tasks(self) -> None:
+        with _state_lock:
+            payload = {
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "active_tasks": list(_active_tasks),
+                "finalized_tasks": list(_finalized_tasks),
+            }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: object) -> None:  # noqa: ANN001
+        # Suppress default stderr output; optionally log to stdout at DEBUG
+        pass
+
+
+def start_http_server(port: int, logger: logging.Logger) -> HTTPServer:
+    """Start the HTTP server in a background daemon thread and return it."""
+    server = HTTPServer(("127.0.0.1", port), _TasksHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"[HTTP] Server running on http://localhost:{port}")
+    return server
 
 
 @dataclass(frozen=True)
@@ -226,6 +332,7 @@ def run_once(
         if not changed_rows and not finalized_rows:
             logger.info(f"[{now}] idle: 無新任務")
 
+        _update_shared_state(active_rows, finalized_rows)
         save_state(state_file, current_state)
         return len(changed_rows) + len(finalized_rows)
     finally:
@@ -241,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-file", type=Path, default=None)
     parser.add_argument("--loop", action="store_true", help="持續執行，每次間隔由 --interval 指定")
     parser.add_argument("--interval", type=float, default=2.0, help="輪詢秒數（--loop 模式使用）")
+    parser.add_argument("--http-port", type=int, default=8888, help="HTTP 監控伺服器埠（預設 8888）")
+    parser.add_argument(
+        "--no-http",
+        action="store_true",
+        help="停用 HTTP 監控伺服器（預設啟用）",
+    )
     return parser
 
 
@@ -248,6 +361,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     logger = setup_logger(args.log_file)
+
+    if not args.no_http:
+        start_http_server(args.http_port, logger)
 
     if args.loop:
         while True:
