@@ -11,14 +11,19 @@ notify_tasks.py - Hermes 主機任務通知腳本
 from __future__ import annotations
 
 import argparse
+import gzip
+import io
 import json
 import logging
 import sqlite3
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_PATH = REPO_ROOT / "src"
@@ -29,6 +34,40 @@ from watchdog.watchdog_db import init_db
 
 ACTIVE_STATUSES = ("submitted", "acknowledged", "working", "input-required")
 FINAL_STATUSES = ("completed", "failed", "cancelled")
+
+
+DEFAULT_HTTP_PORT = 8888
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
+
+
+@dataclass
+class ServerMetrics:
+    request_count: int = 0
+    total_response_time_ms: float = 0.0
+    start_time: float = field(default_factory=time.monotonic)
+
+    def __post_init__(self) -> None:
+        self._lock: threading.Lock = threading.Lock()
+
+    def record(self, elapsed_ms: float) -> None:
+        with self._lock:
+            self.request_count += 1
+            self.total_response_time_ms += elapsed_ms
+
+    @property
+    def avg_response_time_ms(self) -> float:
+        with self._lock:
+            if self.request_count == 0:
+                return 0.0
+            return self.total_response_time_ms / self.request_count
+
+    @property
+    def uptime_seconds(self) -> float:
+        return time.monotonic() - self.start_time
 
 
 @dataclass(frozen=True)
@@ -170,6 +209,148 @@ def render_task_table(rows: list[TaskRow]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# HTTP API server
+# ---------------------------------------------------------------------------
+
+class _TaskAPIState:
+    """Thread-safe shared state between the task poller and HTTP handlers."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: list[dict[str, Any]] = []
+        self._finalized: list[dict[str, Any]] = []
+        self._updated_at: str = datetime.now(timezone.utc).isoformat()
+        self.metrics = ServerMetrics()
+
+    def update(self, active: list[TaskRow], finalized: list[TaskRow]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _row_to_dict(r: TaskRow) -> dict[str, Any]:
+            return {
+                "msg_id": r.msg_id,
+                "task_type": r.task_type,
+                "sender": r.sender,
+                "receiver": r.receiver,
+                "status": r.status,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "elapsed": _format_elapsed(r.created_at, r.updated_at),
+            }
+
+        with self._lock:
+            self._active = [_row_to_dict(r) for r in active]
+            self._finalized = [_row_to_dict(r) for r in finalized]
+            self._updated_at = now
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "timestamp": self._updated_at,
+                "active_tasks": list(self._active),
+                "finalized_tasks": list(self._finalized),
+            }
+
+    def health(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "status": "ok",
+                "uptime_seconds": round(self.metrics.uptime_seconds, 2),
+                "active_task_count": len(self._active),
+            }
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "request_count": self.metrics.request_count,
+                "avg_response_time_ms": round(self.metrics.avg_response_time_ms, 3),
+                "uptime_seconds": round(self.metrics.uptime_seconds, 2),
+            }
+
+
+def _make_handler(state: _TaskAPIState, use_gzip: bool) -> type[BaseHTTPRequestHandler]:
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            # Suppress default access log to avoid cluttering stdout
+            pass
+
+        def _send_json(self, body: dict[str, Any], status: int = 200) -> None:
+            t0 = time.monotonic()
+            raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            accept_enc = self.headers.get("Accept-Encoding", "")
+            compress = use_gzip and "gzip" in accept_enc
+            payload = gzip.compress(raw) if compress else raw
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            if compress:
+                self.send_header("Content-Encoding", "gzip")
+            for k, v in _CORS_HEADERS.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(payload)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            state.metrics.record(elapsed_ms)
+
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            for k, v in _CORS_HEADERS.items():
+                self.send_header(k, v)
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/api/tasks":
+                self._send_json(state.snapshot())
+            elif path == "/health":
+                self._send_json(state.health())
+            elif path == "/metrics":
+                self._send_json(state.metrics_snapshot())
+            else:
+                self._send_json({"error": "not found"}, 404)
+
+    return _Handler
+
+
+class TaskMonitorServer:
+    """Background HTTP server exposing task state via REST endpoints."""
+
+    def __init__(
+        self,
+        port: int = DEFAULT_HTTP_PORT,
+        use_gzip: bool = False,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.port = port
+        self.use_gzip = use_gzip
+        self._logger = logger or logging.getLogger("hermes-notify")
+        self._state = _TaskAPIState()
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def update_state(self, active: list[TaskRow], finalized: list[TaskRow]) -> None:
+        self._state.update(active, finalized)
+
+    def start(self) -> None:
+        handler_cls = _make_handler(self._state, self.use_gzip)
+        try:
+            self._server = HTTPServer(("", self.port), handler_cls)
+            self.port = self._server.server_address[1]  # update with actual bound port (handles port=0)
+        except OSError as exc:
+            self._logger.warning(f"[WARN] HTTP server 無法啟動（port {self.port}）: {exc}")
+            return
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True, name="hermes-http"
+        )
+        self._thread.start()
+        self._logger.info(f"[INFO] HTTP server 啟動：http://localhost:{self.port}")
+
+    def stop(self) -> None:
+        if self._server:
+            self._server.shutdown()
+            self._server = None
+
+
 def setup_logger(log_file: Path | None) -> logging.Logger:
     logger = logging.getLogger("hermes-notify")
     logger.setLevel(logging.INFO)
@@ -196,6 +377,7 @@ def run_once(
     deliver_target: str,
     state_file: Path,
     logger: logging.Logger,
+    http_server: TaskMonitorServer | None = None,
 ) -> int:
     conn = init_db(db_path)
     try:
@@ -211,6 +393,9 @@ def run_once(
             receiver=receiver,
             msg_ids=set(previous_state.keys()) - set(current_state.keys()),
         )
+
+        if http_server is not None:
+            http_server.update_state(active_rows, finalized_rows)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if changed_rows:
@@ -241,6 +426,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-file", type=Path, default=None)
     parser.add_argument("--loop", action="store_true", help="持續執行，每次間隔由 --interval 指定")
     parser.add_argument("--interval", type=float, default=2.0, help="輪詢秒數（--loop 模式使用）")
+    parser.add_argument("--http-port", type=int, default=DEFAULT_HTTP_PORT, help="HTTP server 埠號")
+    parser.add_argument("--no-http", action="store_true", help="停用 HTTP server")
+    parser.add_argument("--gzip", action="store_true", help="啟用 HTTP 回應 GZIP 壓縮")
     return parser
 
 
@@ -249,12 +437,23 @@ def main() -> None:
     args = parser.parse_args()
     logger = setup_logger(args.log_file)
 
-    if args.loop:
-        while True:
-            run_once(args.db, args.receiver, args.deliver, args.state_file, logger)
-            time.sleep(max(args.interval, 0.1))
-    else:
-        run_once(args.db, args.receiver, args.deliver, args.state_file, logger)
+    http_server: TaskMonitorServer | None = None
+    if not args.no_http:
+        http_server = TaskMonitorServer(
+            port=args.http_port, use_gzip=args.gzip, logger=logger
+        )
+        http_server.start()
+
+    try:
+        if args.loop:
+            while True:
+                run_once(args.db, args.receiver, args.deliver, args.state_file, logger, http_server)
+                time.sleep(max(args.interval, 0.1))
+        else:
+            run_once(args.db, args.receiver, args.deliver, args.state_file, logger, http_server)
+    finally:
+        if http_server:
+            http_server.stop()
 
 
 if __name__ == "__main__":
