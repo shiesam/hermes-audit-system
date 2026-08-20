@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes Task Notification Timer
+Requires=hermes-notify.service
+
+[Timer]
+OnBootSec=10sec
+OnUnitActiveSec=2sec
+AccuracySec=1sec
+Unit=hermes-notify.service
+
+[Install]
+WantedBy=timers.target

@@ -349,6 +349,32 @@ tail -f /var/log/hermes-watchdog.log
 # ...
 ```
 
+### 任務通知（systemd timer，每 2 秒）
+
+用途：偵測 `receiver='host'` 且狀態為 `submitted/acknowledged/working/input-required` 的任務，
+並輸出任務摘要（`msg_id/task_type/sender/receiver/status/created_at`）到日誌。
+
+```bash
+# 1) 安裝通知腳本與 systemd 設定
+cd /home/vboxuser/hermes-audit-system
+sudo cp hermes-notify.service /etc/systemd/system/hermes-notify.service
+sudo cp hermes-notify.timer /etc/systemd/system/hermes-notify.timer
+
+# 2) 啟用 timer（開機後 10 秒啟動；每 2 秒觸發一次）
+sudo systemctl daemon-reload
+sudo systemctl enable hermes-notify.timer
+sudo systemctl start hermes-notify.timer
+
+# 3) 驗證
+sudo systemctl status hermes-notify.timer --no-pager
+sudo systemctl list-timers --all | grep hermes-notify
+tail -f /var/log/hermes-notify.log
+```
+
+預期：
+- 出現新任務或狀態變更時，`/var/log/hermes-notify.log` 會輸出表格
+- 無任務時輸出 `idle: 無新任務`
+
 ---
 
 ## 6️⃣ 監控和故障排查

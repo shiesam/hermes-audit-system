@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Task Notification Service
+After=network.target
+
+[Service]
+Type=simple
+User=vboxuser
+WorkingDirectory=/home/vboxuser/hermes-audit-system
+ExecStart=/usr/bin/python3 /home/vboxuser/hermes-audit-system/notify_tasks.py --db /home/vboxuser/hermes-audit-system/agent-mesh.db --receiver host --deliver origin --state-file /var/tmp/hermes-notify-state.json --log-file /var/log/hermes-notify.log
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/var/log/hermes-notify.log
+StandardError=append:/var/log/hermes-notify.log
+
+[Install]
+WantedBy=multi-user.target
