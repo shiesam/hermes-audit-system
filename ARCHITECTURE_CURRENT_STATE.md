@@ -244,7 +244,7 @@ systemd timer (every 2s)
 
 ## 6. Database Design and Sharing Model
 
-## 6.1 Why SQLite works here
+### 6.1 Why SQLite works here
 
 目前設計是「兩端共享一個小型狀態庫」，SQLite 的優點是：
 - 無需額外部署 DB server
@@ -252,7 +252,7 @@ systemd timer (every 2s)
 - 可直接當 message queue + coordination store
 - WAL 模式可改善讀寫並行
 
-## 6.2 Concurrency controls already implemented
+### 6.2 Concurrency controls already implemented
 
 在 `get_connection()` 中已啟用：
 - `PRAGMA journal_mode=WAL`
@@ -268,7 +268,7 @@ systemd timer (every 2s)
 - 條件式 UPDATE
 - 樂觀鎖版本號
 
-## 6.3 Shared-state tables
+### 6.3 Shared-state tables
 
 ### `messages`
 主任務表，兼具 queue 與 state machine 功能。
@@ -327,7 +327,7 @@ systemd timer (every 2s)
 
 ## 7. Implemented vs Not Implemented
 
-## 7.1 Implemented now
+### 7.1 Implemented now
 
 - [x] 共享 SQLite 狀態庫
 - [x] `messages` 任務狀態機
@@ -340,13 +340,13 @@ systemd timer (every 2s)
 - [x] 手動 E2E 操作腳本
 - [x] CLI 管理入口：`watchdog_db.py run/status/arm/heartbeat/disarm/...`
 
-## 7.2 Partially implemented
+### 7.2 Partially implemented
 
 - [~] DB 路徑統一：方向明確，但 repo 內仍混用 repo-local、`/home/vboxuser/...`、`/srv/samba/...`
 - [~] Initiator/Executor 腳本收斂：新舊腳本並存，import 風格不一致
 - [~] 部署文檔：已有大量內容，但部分仍描述理想態或舊結構
 
-## 7.3 Not implemented / not delivered in repo
+### 7.3 Not implemented / not delivered in repo
 
 - [ ] `hermes-executor.service`
 - [ ] `hermes-watchdog.service`
@@ -413,7 +413,7 @@ repo 內可直接使用：
 目前最務實的驗證方式是：
 1. 在一端啟動 executor
 2. 在另一端用 initiator/E2E script 建立任務
-3. 観察 `messages`、`progress_events`、`incidents`
+3. 觀察 `messages`、`progress_events`、`incidents`
 4. 手動執行 watchdog scan
 5. 檢查 notify timer 日誌
 
