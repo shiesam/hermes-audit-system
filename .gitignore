@@ -4,3 +4,4 @@ __pycache__/
 fix_*.py
 repair_*.py
 *.pyc
+shrimp_config.env

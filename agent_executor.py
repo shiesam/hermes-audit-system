@@ -1,341 +1,240 @@
 #!/usr/bin/env python3
 """
-Agent Executor 行為規範
-在發起端生成任務後，執行端監聽並執行任務
+Hermes Agent Executor（純 Python + sqlite3 版）
 
-使用示例：
-  作為「主機」執行：python3 agent_executor.py --agent host
-  作為「蝦米」執行：python3 agent_executor.py --agent shrimp
+不依賴 watchdog/mesh 模組，可在 Windows（MSYS /z 工作目錄）與 Linux 主機上執行。
+使用 messages 表格（不是 mesh_tasks）。
 """
-
-from __future__ import annotations
-
 import argparse
 import json
+import os
+import random
+import string
 import sqlite3
 import sys
 import time
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
-# 根據環境調整
-try:
-    from watchdog.watchdog_db import (
-        init_db, get_message, get_messages_by_status,
-        update_message_status, heartbeat, get_active_watchdog_jobs,
-        utc_now_iso
+DEFAULT_DB_PATH = "agent-mesh.db"   # 相對路徑（Windows MSYS /z 工作目錄推薦）
+DEFAULT_INTERVAL = 5
+DEFAULT_AGENT_NAME = "shrimp"
+
+
+def get_connection(db_path: str) -> sqlite3.Connection:
+    """取得 SQLite 連線，啟用 WAL 模式。"""
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def messages_get_pending(conn: sqlite3.Connection, receiver: str, limit: int = 10) -> list:
+    """查詢 receiver=receiver 且 status='submitted' 的訊息，按建立時間排序。"""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT msg_id, type, status, sender, receiver, created_at, updated_at,
+               version, payload, result, errors, next_hop
+        FROM messages
+        WHERE receiver = ? AND status = 'submitted'
+        ORDER BY created_at ASC
+        LIMIT ?
+        """,
+        (receiver, limit),
     )
-    from mesh.progress_tracker import ProgressTracker
-except ImportError as e:
-    print(f"ERROR: Import failed: {e}")
-    print("Make sure you're in the hermes-audit-system directory.")
-    sys.exit(1)
+    rows = cur.fetchall()
+    return [dict(row) for row in rows]
 
 
-# ──────────────────────────────────────────────
-# 配置
-# ──────────────────────────────────────────────
+def messages_update(conn: sqlite3.Connection, msg_id: str, status: str,
+                    result: Optional[Dict[str, Any]] = None,
+                    errors: Optional[Dict[str, Any]] = None,
+                    expected_current: Optional[str] = None) -> bool:
+    """更新訊息狀態（含樂觀鎖）。"""
+    cur = conn.cursor()
+    sets = ["status = ?"]
+    params = [status]
+    if result is not None:
+        sets.append("result = ?")
+        params.append(json.dumps(result))
+    if errors is not None:
+        sets.append("errors = ?")
+        params.append(json.dumps(errors))
+    now = datetime.now(timezone.utc).isoformat()
+    sets.append("updated_at = ?")
+    params.append(now)
+    where = "msg_id = ?"
+    params.append(msg_id)
+    if expected_current is not None:
+        where += " AND status = ?"
+        params.append(expected_current)
+    cur.execute(
+        f"UPDATE messages SET {', '.join(sets)} WHERE {where}",
+        params,
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
-AGENT_NAME_HOST = "host"
-AGENT_NAME_SHRIMP = "shrimp"
 
-# 預設 DB 路徑（可覆寫）
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "agent-mesh.db"
+def messages_insert(conn: sqlite3.Connection, msg_id: str, sender: str, receiver: str,
+                    payload: Dict[str, Any], *, version: int = 1,
+                    next_hop: Optional[Dict[str, Any]] = None) -> bool:
+    """建立新訊息（task）。"""
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO messages (msg_id, type, status, sender, receiver, created_at, updated_at,
+                              version, payload, result, errors, next_hop)
+        VALUES (?, 'task', 'submitted', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        """,
+        (msg_id, sender, receiver, now, now, version, json.dumps(payload),
+         json.dumps(next_hop) if next_hop else None),
+    )
+    conn.commit()
+    return True
 
-# 主機和蝦米都應該監聽來自對方的訊息
-LISTENERS = {
-    AGENT_NAME_HOST: {
-        "self": "host",
-        "other": "shrimp",
-        "description": "主機 (Linux VirtualBox) - 執行端"
-    },
-    AGENT_NAME_SHRIMP: {
-        "self": "shrimp",
-        "other": "host",
-        "description": "蝦米 (Windows 筆電) - 執行端"
-    }
-}
 
+def generate_msg_id() -> str:
+    """產生 m-<timestamp>-<random6> 格式的 msg_id。"""
+    ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+    rnd = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return f"m-{ts}-{rnd}"
 
-# ──────────────────────────────────────────────
-# 核心邏輯
-# ──────────────────────────────────────────────
 
 def do_work(payload: dict) -> dict:
-    """
-    執行任務的核心業務邏輯
-    
-    真實實現應該：
-    - 根據 task_type 分派到不同的處理器
-    - 處理 payload 中的資料
-    - 回傳 result 或 errors
-    """
-    task_type = payload.get('task_type', 'unknown')
-    description = payload.get('description', '')
-    
-    print(f"  📋 Task Type: {task_type}")
-    print(f"  📝 Description: {description}")
-    
-    try:
-        if task_type == 'collection':
-            return {
-                "task_type": task_type,
-                "status": "collected",
-                "records": 42,
-                "result": f"Collected data: {description}",
-                "processed_at": utc_now_iso()
-            }
-        
-        elif task_type == 'processing':
-            return {
-                "task_type": task_type,
-                "status": "processed",
-                "result": f"Processed: {description}",
-                "processed_at": utc_now_iso()
-            }
-        
-        elif task_type == 'verification':
-            return {
-                "task_type": task_type,
-                "status": "verified",
-                "result": f"Verified: {description}",
-                "processed_at": utc_now_iso()
-            }
-        
-        else:
-            return {
-                "task_type": task_type,
-                "status": "unknown",
-                "result": f"Unknown task type: {task_type}",
-                "processed_at": utc_now_iso()
-            }
-    
-    except Exception as e:
-        return None  # 由外層處理錯誤
+    """執行任務，根據 type 分派。"""
+    task_type = payload.get('type', 'unknown')
+    if task_type == 'regulation_read':
+        return _do_regulation_read(payload)
+    elif task_type == 'collection':
+        return {'status': 'ok', 'message': '[collection] 處理完成'}
+    elif task_type == 'processing':
+        return {'status': 'ok', 'message': '[processing] 處理完成'}
+    elif task_type == 'verification':
+        return {'status': 'ok', 'message': '[verification] 驗證完成'}
+    else:
+        return {'status': 'error', 'message': f'Unknown task type: {task_type}'}
 
 
-def executor_listener_loop(
-    agent_name: str,
-    db_path: Path = DEFAULT_DB_PATH,
-    poll_interval: int = 5,
-    max_iterations: Optional[int] = None
-):
-    """
-    持續監聽訊息，執行任務，回報進度
-    
-    Args:
-        agent_name: "host" 或 "shrimp"
-        db_path: SQLite 資料庫路徑
-        poll_interval: 輪詢間隔（秒）
-        max_iterations: 最大迭代次數（None 表示無限）
-    """
-    
-    if agent_name not in LISTENERS:
-        print(f"❌ 未知的 agent: {agent_name}")
-        return
-    
-    config = LISTENERS[agent_name]
-    self_name = config["self"]
-    other_name = config["other"]
-    
-    print(f"\n{'='*60}")
-    print(f"  {config['description']}")
-    print(f"  監聽對象: {other_name} 的任務")
-    print(f"  輪詢間隔: {poll_interval}s")
-    print(f"{'='*60}\n")
-    
-    conn = init_db(db_path)
-    iteration = 0
-    
-    try:
-        while True:
-            iteration += 1
-            
-            if max_iterations and iteration > max_iterations:
-                print(f"\n✅ 達到最大迭代次數 ({max_iterations})，停止")
-                break
-            
-            try:
-                # 1. 掃描來自對方的新訊息 (status = submitted)
-                messages = get_messages_by_status(conn, 'submitted', limit=10)
-                
-                if not messages:
-                    # print(f"  ⏳ [{iteration}] 沒有新訊息")
-                    time.sleep(poll_interval)
-                    continue
-                
-                # 過濾：只處理發給我的訊息
-                my_messages = [
-                    m for m in messages if m['receiver'] == self_name
-                ]
-                
-                if not my_messages:
-                    time.sleep(poll_interval)
-                    continue
-                
-                print(f"\n📬 [{iteration}] 發現 {len(my_messages)} 個新訊息")
-                
-                for msg in my_messages:
-                    msg_id = msg['msg_id']
-                    payload = json.loads(msg['payload']) if msg['payload'] else {}
-                    sender = msg['sender']
-                    
-                    print(f"\n  ┌─ 訊息: {msg_id}")
-                    print(f"  │  來自: {sender}")
-                    print(f"  │  狀態: {msg['status']}")
-                    
-                    # 初始化進度追蹤（提前到 try 塊最前面，確保即使失敗也能記錄）
-                    tracker = ProgressTracker(db_path, msg_id, self_name)
-                    
-                    try:
-                        # 2. 確認收到 → state: acknowledged
-                        ok = update_message_status(
-                            conn, msg_id, 'acknowledged',
-                            expected_current='submitted'
-                        )
-                        if not ok:
-                            print(f"  │  ❌ 已被其他 agent 搶走")
-                            print(f"  └─")
-                            tracker.close()
-                            continue
-                        
-                        print(f"  │  ✅ 確認收到 (acknowledged)")
+def _do_regulation_read(payload: dict) -> dict:
+    """閱讀法規 PDF 檔案。從 payload 中讀取 pdf_dir 與 file_names。"""
+    pdf_dir = payload.get('pdf_dir', '')
+    file_names = payload.get('file_names', [])
+    result = {}
+    for fname in file_names:
+        fpath = os.path.join(pdf_dir, fname)
+        if not os.path.exists(fpath):
+            result[fname] = {'error': f'檔案不存在：{fpath}'}
+            continue
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(fpath)
+            text = ''
+            for page in doc:
+                text += page.get_text()
+            doc.close()
+            result[fname] = {'page_count': doc.page_count, 'text': text[:5000]}
+        except Exception as e:
+            result[fname] = {'error': str(e)}
+    return result
 
-                        # 尋找對應的 watchdog job
-                        watchdog_jobs = get_active_watchdog_jobs(conn)
-                        wd_tag = next(
-                            (j['watchdog_tag'] for j in watchdog_jobs if j['msg_id'] == msg_id),
-                            None
-                        )
-
-                        if wd_tag:
-                            # 發送 heartbeat 確認
-                            heartbeat(conn, wd_tag)
-                            print(f"  │  💓 發送 heartbeat (wd={wd_tag})")
-
-                        tracker.record_acknowledged(message=f"已確認來自 {sender} 的任務")
-
-                        # 5. 開始工作
-                        ok = update_message_status(
-                            conn, msg_id, 'working',
-                            expected_current='acknowledged'
-                        )
-                        if not ok:
-                            print(f"  │  ❌ 狀態更新失敗")
-                            print(f"  └─")
-                            tracker.close()
-                            continue
-
-                        print(f"  │  🔄 開始工作 (working)")
-                        tracker.record_progress(percent=25, message="開始執行任務")
-                        
-                        # 6. 執行任務核心邏輯
-                        result = do_work(payload)
-                        
-                        if result is None:
-                            raise Exception("Work failed")
-                        
-                        print(f"  │  ✅ 工作完成")
-                        tracker.record_progress(percent=75, message="任務執行完成，準備返回結果")
-                        
-                        # 7. 進度中：定期發送 heartbeat（可選）
-                        if wd_tag:
-                            heartbeat(conn, wd_tag)
-                        
-                        # 8. 任務完成
-                        ok = update_message_status(
-                            conn, msg_id, 'completed',
-                            expected_current='working',
-                            result=result
-                        )
-                        
-                        if ok:
-                            print(f"  │  ✅ 標示完成 (completed)")
-                            if wd_tag:
-                                print(f"  │  📍 watchdog 會自動 disarm")
-                            tracker.record_completed(result=result, message="任務完成")
-                            tracker.close()
-                        else:
-                            print(f"  │  ⚠️  標示完成失敗")
-                            tracker.close()
-                        print(f"  └─")
-                    except Exception as e:
-                        # 9. 失敗處理
-                        print(f"  │  ❌ 異常: {e}")
-                        update_message_status(
-                            conn, msg_id, 'failed',
-                            errors={"error": str(e), "type": type(e).__name__}
-                        )
-                        print(f"  │  ✅ 標示失敗")
-                        tracker.record_failed(error=str(e), message=f"任務失敗：{type(e).__name__}")
-                        tracker.close()
-                        print(f"  └─")
-                
-                time.sleep(poll_interval)
-            
-            except KeyboardInterrupt:
-                print(f"\n\n🛑 收到中止信號")
-                break
-            
-            except Exception as e:
-                print(f"  ❌ 迴圈異常: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(poll_interval)
-    
-    finally:
-        conn.close()
-        print(f"\n👋 監聽器已停止")
-
-
-# ──────────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Hermes Executor - 監聽並執行任務"
-    )
-    
-    parser.add_argument(
-        "--agent",
-        choices=["host", "shrimp"],
-        required=True,
-        help="Agent 身份 (host=主機/shrimp=蝦米)"
-    )
-    
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=DEFAULT_DB_PATH,
-        help=f"SQLite 資料庫路徑 (預設: {DEFAULT_DB_PATH})"
-    )
-    
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=5,
-        help="輪詢間隔 (秒，預設: 5)"
-    )
-    
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=None,
-        help="最大迭代次數 (預設: 無限)"
-    )
-    
+    parser = argparse.ArgumentParser(description='Hermes Agent Executor')
+    parser.add_argument('--agent', type=str, default=DEFAULT_AGENT_NAME,
+                        help='代理名稱（角色）')
+    parser.add_argument('--db', type=str, default=DEFAULT_DB_PATH,
+                        help='SQLite DB 路徑（絕對或相對）')
+    parser.add_argument('--interval', type=int, default=DEFAULT_INTERVAL,
+                        help='輪詢間隔（秒）')
+    parser.add_argument('--once', action='store_true',
+                        help='處理一個訊息後退出（測試用）')
     args = parser.parse_args()
-    
-    executor_listener_loop(
-        agent_name=args.agent,
-        db_path=args.db,
-        poll_interval=args.interval,
-        max_iterations=args.max_iterations
-    )
+
+    db_path = os.path.abspath(args.db) if not os.path.isabs(args.db) else args.db
+    if not os.path.exists(db_path):
+        print(f"⚠️  DB 檔案不存在：{db_path}，將建立新檔案")
+
+    print(f"📡 Hermes Agent Executor 啟動")
+    print(f"   代理名稱：{args.agent}")
+    print(f"   DB 路徑：{db_path}")
+    print(f"   輪詢間隔：{args.interval} 秒")
+    print(f"   模式：{'--once（處理一個後退出）' if args.once else '持續輪詢'}")
+
+    conn = get_connection(db_path)
+
+    # 確認 messages 表格存在
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            msg_id         TEXT PRIMARY KEY,
+            type           TEXT NOT NULL DEFAULT 'task',
+            status         TEXT NOT NULL DEFAULT 'submitted',
+            sender         TEXT NOT NULL,
+            receiver       TEXT NOT NULL,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL,
+            version        INTEGER NOT NULL DEFAULT 1,
+            payload        TEXT,
+            result         TEXT,
+            errors         TEXT,
+            next_hop       TEXT
+        )
+    """)
+
+    while True:
+        pending = messages_get_pending(conn, args.agent, limit=10)
+        if pending:
+            print(f"\n📬 発見 {len(pending)} 个新訊息")
+            for msg in pending:
+                msg_id = msg['msg_id']
+                payload = json.loads(msg['payload']) if msg['payload'] else {}
+                print(f"\n  ┌─ 訊息: {msg_id}")
+                print(f"  │  來自: {msg['sender']}")
+                print(f"  │  類型: {msg['type']}")
+                print(f"  │  狀態: {msg['status']}")
+                try:
+                    # 1. 標示 acknowledged
+                    if messages_update(conn, msg_id, 'acknowledged',
+                                       expected_current='submitted'):
+                        print(f"  │  ✅ 已確認（acknowledged）")
+                    else:
+                        print(f"  │  ❌ 確認失敗（可能已被其他代理處理）")
+                        continue
+
+                    # 2. 標示 working
+                    if messages_update(conn, msg_id, 'working',
+                                       expected_current='acknowledged'):
+                        print(f"  │  🔄 開始執行（working）")
+                    else:
+                        print(f"  │  ❌ 開始執行失敗")
+                        continue
+
+                    # 3. 執行任務
+                    result = do_work(payload)
+
+                    # 4. 標示 completed
+                    if messages_update(conn, msg_id, 'completed', result=result):
+                        print(f"  │  ✅ 執行完成（completed）")
+                        print(f"  │  結果: {json.dumps(result, indent=2)}")
+                    else:
+                        print(f"  │  ❌ 標示 completed 失敗")
+                except Exception as e:
+                    print(f"  │  ❌ 執行異常: {e}")
+                    messages_update(conn, msg_id, 'failed',
+                                    errors={'error': str(e)},
+                                    expected_current='working')
+                finally:
+                    if args.once:
+                        break
+            if args.once:
+                break
+        else:
+            print(f"🔍 沒有新訊息，{args.interval} 秒後重試...")
+            time.sleep(args.interval)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
