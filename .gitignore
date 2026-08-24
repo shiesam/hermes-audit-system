@@ -1,7 +1,54 @@
-*.db
-__pycache__/
-*.log
-fix_*.py
-repair_*.py
-*.pyc
+# 環境
+.env
+.env.local
 shrimp_config.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+PIPFILE.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+/var/log/
+
+# 備份
+*.backup
+*.bak
+
+# OS
+Thumbs.db
+.DS_Store
