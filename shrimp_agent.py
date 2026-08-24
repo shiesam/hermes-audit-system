@@ -78,7 +78,7 @@ except ImportError as exc:
 SHRIMP = "shrimp"
 HOST = "host"
 
-DEFAULT_DB_PATH: Path = _REPO_ROOT / "agent-mesh.db"
+DEFAULT_DB_PATH: Path = Path("/srv/samba/hermes-audit/agent-mesh.db")
 DEFAULT_POLL_INTERVAL: int = 5   # 秒
 DEFAULT_WAIT_TIMEOUT: int = 660  # 秒（比最長 threshold 多 60s）
 

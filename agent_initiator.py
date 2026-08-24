@@ -42,7 +42,7 @@ AGENT_NAME_HOST = "host"
 AGENT_NAME_SHRIMP = "shrimp"
 
 # 預設 DB 路徑（可覆寫）
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "agent-mesh.db"
+DEFAULT_DB_PATH = Path("/srv/samba/hermes-audit/agent-mesh.db")
 
 # 主機和蝦米都可以是發起端
 INITIATORS = {

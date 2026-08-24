@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Agent Executor (Host)
+After=network.target
+
+[Service]
+Type=simple
+User=vboxuser
+WorkingDirectory=/home/vboxuser/hermes-audit-system
+ExecStart=/usr/bin/python3 /home/vboxuser/hermes-audit-system/agent_executor.py --agent host
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/var/log/hermes-executor.log
+StandardError=append:/var/log/hermes-executor.log
+
+[Install]
+WantedBy=multi-user.target
