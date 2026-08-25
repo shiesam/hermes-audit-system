@@ -640,6 +640,21 @@ class ShrimpAgent:
 # ──────────────────────────────────────────────
 
 def main() -> None:
+    import os
+
+    MEMORY_BANK_README = "Z:/memory-bank/README.md"
+
+    def load_memory_bank_readme():
+        try:
+            with open(MEMORY_BANK_README, "r", encoding="utf-8") as f:
+                content = f.read()
+                print(f"📖 已讀取記憶庫規則：{MEMORY_BANK_README}（{len(content)} 字元）", flush=True)
+                return content
+        except FileNotFoundError:
+            print(f"[WARN] 找不到記憶庫入口文件：{MEMORY_BANK_README}，本次啟動未載入記憶庫規則。")
+            return None
+
+    memory_bank_readme = load_memory_bank_readme()
     parser = argparse.ArgumentParser(
         description="shrimp_agent — 蝦米（Windows 筆電）Agent 包裝",
         formatter_class=argparse.RawDescriptionHelpFormatter,

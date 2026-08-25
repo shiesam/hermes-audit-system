@@ -132,17 +132,31 @@ def _do_regulation_read(payload: dict) -> dict:
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(fpath)
+            page_count = doc.page_count
             text = ''
             for page in doc:
                 text += page.get_text()
             doc.close()
-            result[fname] = {'page_count': doc.page_count, 'text': text[:5000]}
+            result[fname] = {'page_count': page_count, 'text': text}
         except Exception as e:
             result[fname] = {'error': str(e)}
     return result
 
 
 def main():
+    MEMORY_BANK_README = "/srv/samba/hermes-audit/memory-bank/README.md"
+
+    def load_memory_bank_readme():
+        try:
+            with open(MEMORY_BANK_README, "r", encoding="utf-8") as f:
+                content = f.read()
+                print(f"📖 已讀取記憶庫規則：{MEMORY_BANK_README}（{len(content)} 字元）", flush=True)
+                return content
+        except FileNotFoundError:
+            print(f"[WARN] 找不到記憶庫入口文件：{MEMORY_BANK_README}，本次啟動未載入記憶庫規則。", flush=True)
+            return None
+
+    memory_bank_readme = load_memory_bank_readme()
     parser = argparse.ArgumentParser(description='Hermes Agent Executor')
     parser.add_argument('--agent', type=str, default=DEFAULT_AGENT_NAME,
                         help='代理名稱（角色）')
