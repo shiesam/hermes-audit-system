@@ -24,18 +24,21 @@
 | 環境/工具/硬體路徑 | `techContext.md` | 1-2 環境與硬體資產地圖 |
 | 跨平台通訊規則 | `commSOP.md` | 1-3 跨平台通訊與遠端操作鏈 |
 | 多 Agent 協作方式 | `systemPatterns.md` | 1-0-1、1-1 |
-| 工程安全紅線（占位，待補） | `guardrails/` | 1-4 工程執行邊界與安全 SOP |
+| ~~工程安全紅線~~ | 暫不建立（見下方說明） | 1-4 工程執行邊界與安全 SOP |
 | 法規、案場、報價、材料、圖層、設備、投資 | `domainKnowledge/` 底下各資料夾 | 1-5 專業知識與實務數據庫 |
+
+> 📌 **1-4 工程執行邊界與安全 SOP：暫不建立，代號跳號保留。**
+> 目前尚未想好內容，等之後有明確想法再回來建立 `guardrails/`，不先做空殼佔位。
 
 ## 建置進度（逐份完成，不求一次到位）
 
 - [x] `README.md`（本檔，1-0）
-- [ ] `activeContext.md`（1-1-2）
-- [ ] `progress.md`（1-1-1）
-- [ ] `techContext.md`（1-2）
-- [ ] `commSOP.md`（1-3）
-- [ ] `systemPatterns.md`（1-0-1）
-- [ ] `guardrails/README.md`（1-4，占位）
+- [x] `activeContext.md`（1-1-2）
+- [x] `progress.md`（1-1-1）
+- [x] `techContext.md`（1-2）
+- [x] `commSOP.md`（1-3）
+- [x] `systemPatterns.md`（1-0-1）
+- [ ] ~~`guardrails/README.md`（1-4）~~ — 跳號保留，暫不建立
 - [ ] `domainKnowledge/regulations/README.md`（1-5-1-1）
 - [ ] `domainKnowledge/projectRecords/README.md`（1-5-1-2）
 - [ ] `domainKnowledge/costEstimation/README.md`（1-5-1-3）
