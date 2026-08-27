@@ -146,6 +146,26 @@ python shrimp_agent.py executor --max-iterations 3
 | **發起端 互動** | `python shrimp_agent.py initiator --interactive` | 逐個輸入任務參數，建立任務並等待結果 |
 | **發起端 批次** | `python shrimp_agent.py initiator --task-type collection --description "蒐集數據"` | 一次建立一個任務，可選擇不等待結果 |
 
+### DWG → DXF 任務
+
+主機 executor 現在支援 `dwg_to_dxf` 任務，流程是：
+
+1. 先用 ODAFileConverter 的**目錄批次模式**處理單一暫存檔
+2. 自動避開原始檔名中的括號等特殊字元
+3. 若 ODA exit 0 但沒有產生 DXF，會自動 fallback 到 `dwg2dxf`（LibreDWG）
+4. 每次嘗試都會把診斷 JSON 寫到輸出目錄下的 `.hermes-dwg-diagnostics/`
+
+範例：
+
+```bash
+python3 agent_initiator.py \
+  --agent shrimp \
+  --task-type dwg_to_dxf \
+  --description "轉換 CNS DWG 為 DXF" \
+  --input-path "/srv/samba/hermes-audit/CH13-01-1(G1-01).dwg" \
+  --output-path "/srv/samba/hermes-audit/CH13-01-1(G1-01).dxf"
+```
+
 完整用法與參數請見 `SHRIMP_QUICK_START.md`。
 
 ---

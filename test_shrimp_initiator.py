@@ -67,6 +67,33 @@ OTHER_AGENT = "host"
 DEFAULT_DB = Path("/srv/samba/hermes-audit/agent-mesh.db")
 POLL_INTERVAL = 5  # 秒
 SEPARATOR = "=" * 60
+SUPPORTED_TASK_TYPES = ("collection", "processing", "verification", "dwg_to_dxf")
+
+
+def build_payload(
+    task_type: str,
+    description: str,
+    *,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    output_version: Optional[str] = None,
+    preferred_converters: Optional[str] = None,
+) -> dict:
+    payload = {
+        "task_type": task_type,
+        "description": description,
+    }
+    if task_type == "dwg_to_dxf":
+        if not input_path:
+            raise ValueError("dwg_to_dxf 任務需要 --input-path")
+        payload["input_path"] = input_path
+        if output_path:
+            payload["output_path"] = output_path
+        if output_version:
+            payload["output_version"] = output_version
+        if preferred_converters:
+            payload["preferred_converters"] = preferred_converters
+    return payload
 
 
 # ──────────────────────────────────────────────
@@ -79,16 +106,25 @@ def create_task(
     description: str,
     threshold_override: Optional[int],
     db_path: Path,
+    *,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    output_version: Optional[str] = None,
+    preferred_converters: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     建立訊息並 arm watchdog。
     返回 (msg_id, wd_tag)。
     """
     msg_id = f"m-{uuid.uuid4().hex[:8]}"
-    payload = {
-        "task_type": task_type,
-        "description": description,
-    }
+    payload = build_payload(
+        task_type,
+        description,
+        input_path=input_path,
+        output_path=output_path,
+        output_version=output_version,
+        preferred_converters=preferred_converters,
+    )
 
     # 1. 建立訊息
     create_message(
@@ -220,6 +256,11 @@ def run_initiator(
     threshold_override: Optional[int],
     no_wait: bool,
     poll_interval: int,
+    *,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    output_version: Optional[str] = None,
+    preferred_converters: Optional[str] = None,
 ):
     print(f"\n{SEPARATOR}")
     print(f"  🦐 蝦米發起端（Shrimp Initiator）— 端到端測試")
@@ -249,6 +290,10 @@ def run_initiator(
             description=description,
             threshold_override=threshold_override,
             db_path=db_path,
+            input_path=input_path,
+            output_path=output_path,
+            output_version=output_version,
+            preferred_converters=preferred_converters,
         )
 
         print(f"\n訊息 ID:      {msg_id}")
@@ -340,7 +385,7 @@ def main():
     )
     parser.add_argument(
         "--task-type",
-        choices=["collection", "processing", "verification"],
+        choices=list(SUPPORTED_TASK_TYPES),
         default="collection",
         help="任務類型（預設: collection）",
     )
@@ -348,6 +393,24 @@ def main():
         "--description",
         default="test from shrimp laptop",
         help="任務描述（預設: test from shrimp laptop）",
+    )
+    parser.add_argument(
+        "--input-path",
+        help="dwg_to_dxf 任務的 DWG 輸入路徑",
+    )
+    parser.add_argument(
+        "--output-path",
+        help="dwg_to_dxf 任務的 DXF 輸出路徑",
+    )
+    parser.add_argument(
+        "--output-version",
+        default="ACAD2018",
+        help="dwg_to_dxf 任務的輸出版本（預設: ACAD2018）",
+    )
+    parser.add_argument(
+        "--preferred-converters",
+        default="oda,libredwg",
+        help="dwg_to_dxf 轉換器順序（逗號分隔，預設: oda,libredwg）",
     )
     parser.add_argument(
         "--threshold",
@@ -384,6 +447,10 @@ def main():
             threshold_override=args.threshold,
             no_wait=args.no_wait,
             poll_interval=args.interval,
+            input_path=args.input_path,
+            output_path=args.output_path,
+            output_version=args.output_version,
+            preferred_converters=args.preferred_converters,
         )
 
 

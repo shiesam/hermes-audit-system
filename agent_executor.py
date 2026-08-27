@@ -14,7 +14,16 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+REPO_ROOT = Path(__file__).resolve().parent
+SRC_PATH = REPO_ROOT / "src"
+
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+from hermes_audit_system.dwg_conversion import run_dwg_to_dxf_task
 
 DEFAULT_DB_PATH = "agent-mesh.db"   # 相對路徑（Windows MSYS /z 工作目錄推薦）
 DEFAULT_INTERVAL = 5
@@ -106,9 +115,11 @@ def generate_msg_id() -> str:
 
 def do_work(payload: dict) -> dict:
     """執行任務，根據 type 分派。"""
-    task_type = payload.get('type', 'unknown')
+    task_type = payload.get("task_type") or payload.get("type", "unknown")
     if task_type == 'regulation_read':
         return _do_regulation_read(payload)
+    elif task_type == "dwg_to_dxf":
+        return run_dwg_to_dxf_task(payload)
     elif task_type == 'collection':
         return {'status': 'ok', 'message': '[collection] 處理完成'}
     elif task_type == 'processing':

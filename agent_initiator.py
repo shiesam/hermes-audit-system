@@ -40,6 +40,7 @@ except ImportError as e:
 
 AGENT_NAME_HOST = "host"
 AGENT_NAME_SHRIMP = "shrimp"
+SUPPORTED_TASK_TYPES = ("collection", "processing", "verification", "dwg_to_dxf")
 
 # 預設 DB 路徑（可覆寫）
 DEFAULT_DB_PATH = Path("/srv/samba/hermes-audit/agent-mesh.db")
@@ -57,6 +58,32 @@ INITIATORS = {
         "description": "蝦米 (Windows 筆電) - 發起端"
     }
 }
+
+
+def build_payload(
+    task_type: str,
+    description: str,
+    *,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    output_version: Optional[str] = None,
+    preferred_converters: Optional[str] = None,
+) -> dict:
+    payload = {
+        "task_type": task_type,
+        "description": description,
+    }
+    if task_type == "dwg_to_dxf":
+        if not input_path:
+            raise ValueError("dwg_to_dxf 任務需要 --input-path")
+        payload["input_path"] = input_path
+        if output_path:
+            payload["output_path"] = output_path
+        if output_version:
+            payload["output_version"] = output_version
+        if preferred_converters:
+            payload["preferred_converters"] = preferred_converters
+    return payload
 
 
 # ──────────────────────────────────────────────
@@ -118,7 +145,7 @@ def initiator_create_task(
         conn,
         msg_id=msg_id,
         kind=kind,
-        threshold_override=threshold_override,
+        threshold_override=threshold,
         label=f"task-{kind}"
     )
     print(f"✅ Arm Watchdog: {wd_tag}")
@@ -276,8 +303,8 @@ def initiator_interactive_mode(
             print("-" * 40)
             
             # 輸入任務類型
-            task_type = input("任務類型 (collection/processing/verification) [collection]: ").strip() or "collection"
-            if task_type not in ["collection", "processing", "verification"]:
+            task_type = input("任務類型 (collection/processing/verification/dwg_to_dxf) [collection]: ").strip() or "collection"
+            if task_type not in SUPPORTED_TASK_TYPES:
                 print(f"❌ 未知的任務類型: {task_type}")
                 continue
             
@@ -298,10 +325,27 @@ def initiator_interactive_mode(
                     continue
             
             # 建立任務
-            payload = {
-                "task_type": task_type,
-                "description": description,
-            }
+            input_path = None
+            output_path = None
+            output_version = None
+            preferred_converters = None
+            if task_type == "dwg_to_dxf":
+                input_path = input("DWG 輸入路徑: ").strip()
+                if not input_path:
+                    print("❌ DWG 輸入路徑不能為空")
+                    continue
+                output_path = input("DXF 輸出路徑（留空則與來源同目錄）: ").strip() or None
+                output_version = input("輸出版本 [ACAD2018]: ").strip() or "ACAD2018"
+                preferred_converters = input("轉換器順序 [oda,libredwg]: ").strip() or "oda,libredwg"
+
+            payload = build_payload(
+                task_type,
+                description,
+                input_path=input_path,
+                output_path=output_path,
+                output_version=output_version,
+                preferred_converters=preferred_converters,
+            )
             
             try:
                 msg_id, wd_tag = initiator_create_task(
@@ -352,7 +396,11 @@ def initiator_batch_mode(
     description: str,
     threshold_override: Optional[int] = None,
     wait_for_result: bool = True,
-    db_path: Path = DEFAULT_DB_PATH
+    db_path: Path = DEFAULT_DB_PATH,
+    input_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    output_version: Optional[str] = None,
+    preferred_converters: Optional[str] = None,
 ):
     """
     批次模式：建立單個任務並等待結果
@@ -371,10 +419,14 @@ def initiator_batch_mode(
     
     try:
         # 建立任務
-        payload = {
-            "task_type": task_type,
-            "description": description,
-        }
+        payload = build_payload(
+            task_type,
+            description,
+            input_path=input_path,
+            output_path=output_path,
+            output_version=output_version,
+            preferred_converters=preferred_converters,
+        )
         
         msg_id, wd_tag = initiator_create_task(
             conn,
@@ -438,13 +490,31 @@ def main():
     # 批次模式參數
     parser.add_argument(
         "--task-type",
-        choices=["collection", "processing", "verification"],
+        choices=list(SUPPORTED_TASK_TYPES),
         help="任務類型"
     )
     
     parser.add_argument(
         "--description",
         help="任務描述"
+    )
+    parser.add_argument(
+        "--input-path",
+        help="dwg_to_dxf 任務的 DWG 輸入路徑"
+    )
+    parser.add_argument(
+        "--output-path",
+        help="dwg_to_dxf 任務的 DXF 輸出路徑"
+    )
+    parser.add_argument(
+        "--output-version",
+        default="ACAD2018",
+        help="dwg_to_dxf 任務的輸出版本（預設: ACAD2018）"
+    )
+    parser.add_argument(
+        "--preferred-converters",
+        default="oda,libredwg",
+        help="dwg_to_dxf 轉換器順序（逗號分隔，預設: oda,libredwg）"
     )
     
     parser.add_argument(
@@ -473,7 +543,11 @@ def main():
             args.description,
             threshold_override=args.threshold,
             wait_for_result=not args.no_wait,
-            db_path=args.db
+            db_path=args.db,
+            input_path=args.input_path,
+            output_path=args.output_path,
+            output_version=args.output_version,
+            preferred_converters=args.preferred_converters,
         )
     
     else:

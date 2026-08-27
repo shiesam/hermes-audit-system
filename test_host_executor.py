@@ -34,6 +34,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 try:
+    from hermes_audit_system.dwg_conversion import run_dwg_to_dxf_task
     from watchdog.watchdog_db import (
         init_db,
         get_message,
@@ -79,6 +80,9 @@ def do_work(payload: dict) -> dict:
     print(f"  │  📋 任務類型: {task_type}")
     print(f"  │  📝 描述:     {description}")
     print(f"  │  ⏳ 執行中...")
+
+    if task_type == "dwg_to_dxf":
+        return run_dwg_to_dxf_task(payload)
 
     # 模擬工作時間
     time.sleep(1)

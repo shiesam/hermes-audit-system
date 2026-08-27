@@ -53,6 +53,21 @@
 |------|-----------|------|----------|
 | 新增一個 task_type 的處理邏輯 | `agent_executor.py` | `do_work()` 函數，176-244 行 | 在 `do_work()` 裡加 `elif task_type == "你的類型":` 分支。參考現有的 `collection`、`processing`、`verification` 分支模式。若無對應處理，保留 stub 回傳 `{"status":"unknown","result":"..."}`。 |
 
+#### 現成範例：`dwg_to_dxf`
+
+- 執行端：`agent_executor.py` 會先嘗試 `ODAFileConverter`，若 **exit 0 但沒有 DXF 輸出**，自動 fallback 到 `dwg2dxf`（LibreDWG）。
+- ODA 只走**目錄批次模式**：先把單一 DWG 複製到暫存資料夾，再用安全檔名呼叫 ODA，避免原始檔名括號 `()` 影響解析。
+- 診斷輸出：每次轉換都會寫 `summary.json` 與各 converter 的 JSON 到 `輸出目錄/.hermes-dwg-diagnostics/<輸出檔名>/`。
+- 發起方式：
+  ```bash
+  python3 agent_initiator.py \
+    --agent shrimp \
+    --task-type dwg_to_dxf \
+    --description "DWG 轉 DXF" \
+    --input-path "/srv/samba/hermes-audit/input.dwg" \
+    --output-path "/srv/samba/hermes-audit/output.dxf"
+  ```
+
 ### 2.2 改 executor 輪詢間隔
 
 | 需求 | 改哪個檔案 | 位置 | 注意事項 |

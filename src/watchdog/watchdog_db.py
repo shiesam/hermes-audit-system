@@ -35,6 +35,7 @@ DEFAULT_THRESHOLDS = {
     "collection":       600,   # 蒐集類任務
     "processing":       900,   # 處理類任務
     "verification":     600,   # 驗證類任務
+    "dwg_to_dxf":      1800,   # DWG 轉 DXF 可能需要較長時間
     "unknown":          300,   # 未知任務類型的預設
 }
 
@@ -139,6 +140,7 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
             ('threshold.collection',        '600'),
             ('threshold.processing',        '900'),
             ('threshold.verification',      '600'),
+            ('threshold.dwg_to_dxf',       '1800'),
             ('threshold.unknown',           '300'),
             ('review_cooldown',             '600');
     """)
